@@ -28,8 +28,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision
-import torchvision.transforms.v2 as transforms
-import torchvision.transforms.v2.functional as F
+import torchvision.transforms as transforms
+import torchvision.transforms.functional as F
 from loguru import logger
 from sklearn.metrics import f1_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
@@ -37,7 +37,7 @@ from tqdm.auto import tqdm
 
 dbg = logger.debug
 
-torchvision.disable_beta_transforms_warning()
+# torchvision.disable_beta_transforms_warning()
 warnings.simplefilter("ignore")
 
 
@@ -939,27 +939,35 @@ def predict(cfg: CFG, test_data_dir: Path) -> np.ndarray:
     return pred_tile_image
 
 
-def test(cfg: CFG) -> pd.DataFrame:
+def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
     test_data_root = DATA_DIR / "test"
     preds = []
     for fp in test_data_root.glob("*"):
         print(fp)
         pred_tile_image = predict(cfg=cfg, test_data_dir=fp)
 
-        plt.imsave(
-            OUTPUT_DIR
-            / cfg.exp_name
-            / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png",
-            pred_tile_image,
-        )
-        plt.imsave(
-            OUTPUT_DIR
-            / cfg.exp_name
-            / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png",
-            np.where(pred_tile_image > 0.15, 1, 0),
-        )
+        if IS_TRAIN:
+            plt.imsave(
+                OUTPUT_DIR
+                / cfg.exp_name
+                / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png",
+                pred_tile_image,
+            )
+            plt.imsave(
+                OUTPUT_DIR
+                / cfg.exp_name
+                / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png",
+                np.where(pred_tile_image > threshold, 1, 0),
+            )
+        else:
+            plt.imshow(pred_tile_image)
+            plt.title("pred_tile_image")
+            plt.show()
+            plt.imshow(np.where(pred_tile_image > threshold, 1, 0))
+            plt.title("pred_tile_mask")
+            plt.show()
 
-        starts_idx, lengths = rle(pred_tile_image, threshold=0.4)
+        starts_idx, lengths = rle(pred_tile_image, threshold=threshold)
         inklabels_rle = " ".join(map(str, sum(zip(starts_idx, lengths), ())))
         preds.append({"Id": str(fp).split("/")[-1], "Predicted": inklabels_rle})
     return pd.DataFrame(preds)
@@ -971,16 +979,16 @@ def test(cfg: CFG) -> pd.DataFrame:
 def main() -> None:
     cfg = CFG()
     (OUTPUT_DIR / cfg.exp_name).mkdir(parents=True, exist_ok=True)
-    images = get_surface_volume_images()
-    image_labels = get_inklabels_images()
-    image_masks = get_mask_images()
-    data_fold = split_cv(images=images, labels=image_labels, masks=image_masks)
 
     if IS_TRAIN:
+        images = get_surface_volume_images()
+        image_labels = get_inklabels_images()
+        image_masks = get_mask_images()
+        data_fold = split_cv(images=images, labels=image_labels, masks=image_masks)
         train(cfg=cfg, images=images, labels=image_labels, masks=image_masks)
         valid(cfg, data_fold=data_fold)
     if MAKE_SUB:
-        preds = test(cfg)
+        preds = test(cfg, threshold=0.4)
         print(preds)
         save_path = (
             "submission.csv"
