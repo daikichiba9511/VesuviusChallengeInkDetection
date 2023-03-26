@@ -1,0 +1,6 @@
+input
+output
+*.ipynb
+__pycache__
+notebooks
+docs
