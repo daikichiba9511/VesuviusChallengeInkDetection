@@ -20,6 +20,7 @@ matplotlib-venn = "^0.11.9"
 timm = "^0.6.12"
 scikit-learn = "^1.2.2"
 loguru = "^0.6.0"
+segmentation-models-pytorch = "^0.3.2"
 
 [tool.poetry.group.dev.dependencies]
 pyproject-flake8 = "^6.0.0.post1"

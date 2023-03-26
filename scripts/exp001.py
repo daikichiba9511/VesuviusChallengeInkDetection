@@ -754,7 +754,7 @@ def train(
                 data_fold[fold]["valid_label"][0].reshape(-1),
                 pred_tile_image.reshape(-1),
             )
-            print(f"AUC: {auc:.5f}")
+            logger.info(f"ROC-AUC: {auc:.5f}")
             lr = optimizer.param_groups[0]["lr"]
             valid_metrics.append(lr)
             early_stopping(-auc, net)
@@ -921,7 +921,12 @@ def predict(cfg: CFG, test_data_dir: Path) -> np.ndarray:
     w_count = math.ceil(test_image[0].shape[1] / cfg.image_size[1])
     h_count = math.ceil(test_image[0].shape[0] / cfg.image_size[0])
 
-    plt.imsave(OUTPUT_DIR / cfg.exp_name / "test_image.png", test_image[0])
+    if IS_TRAIN:
+        plt.imsave(OUTPUT_DIR / cfg.exp_name / "test_image.png", test_image[0])
+    else:
+        plt.imshow(test_image[0])
+        plt.title("test image")
+        plt.show()
 
     tile_array = []
     stack_pred = np.vstack(test_preds).reshape(-1, cfg.image_size[0], cfg.image_size[1])
@@ -929,7 +934,14 @@ def predict(cfg: CFG, test_data_dir: Path) -> np.ndarray:
         tile_array.append(stack_pred[h_i * w_count : (h_i + 1) * w_count])
 
     pred_tile_image = concat_tile(tile_array)
-    plt.imsave(OUTPUT_DIR / cfg.exp_name / "test_pred_tile_image.png", pred_tile_image)
+    if IS_TRAIN:
+        plt.imsave(
+            OUTPUT_DIR / cfg.exp_name / "test_pred_tile_image.png", pred_tile_image
+        )
+    else:
+        plt.imshow(pred_tile_image)
+        plt.title("pred tile imagep")
+        plt.show()
 
     pred_tile_image = np.where(
         test_mask > 1,
@@ -987,6 +999,7 @@ def main() -> None:
         data_fold = split_cv(images=images, labels=image_labels, masks=image_masks)
         train(cfg=cfg, images=images, labels=image_labels, masks=image_masks)
         valid(cfg, data_fold=data_fold)
+
     if MAKE_SUB:
         preds = test(cfg, threshold=0.4)
         print(preds)
