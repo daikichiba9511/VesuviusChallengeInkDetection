@@ -15,7 +15,8 @@ import os
 import pickle
 import random
 import warnings
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import segmentation_models_pytorch as smp
 import timm
 import torch
 import torch.nn as nn
@@ -31,9 +33,11 @@ import torchvision
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
 from loguru import logger
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import fbeta_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
+
+import wandb
 
 dbg = logger.debug
 
@@ -87,19 +91,32 @@ def seed_everything(seed: int = 42) -> None:
 # ==============================l================================
 @dataclass(frozen=True)
 class CFG:
-    exp_name = "exp000"
-
-    n_fold = 5
+    exp_name = "exp001-swinv2"
     random_state = 42
     lr = 1e-5
     max_lr = 1e-5
-    patience = 15
+    patience = 10
     n_fold = 3
     epoch = 8
     batch_size = 8
     image_size = (512, 512)
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    use_amp: bool = True
+
+    # Model
+    arch: str = "Unet"
+    # encoder_name: str = "resnet18"
+    # encoder_name: str = "resnet34"
+    encoder_name: str = "timm-efficientnet-b0"
+    # encoder_name: str = "timm-efficientnet-b6"
+    # encoder_name: str = "tu-swin_base_patch4_window12_384_in22k"
+    # swinはfeature_infoのattributeがない
+    # encoder_name: str = "tu-convnext_small"
+    # encoder_name: str = "tu-convnext_base_in22k"
+    # convnext系はsmpとうまく使えない
+    # depth=5だとencoderの初期化ができなくてdepth=4だとサイズが合わない(channels=(512, 256, 128, 64))
+    # encoder_name: str = "tu-swinv2_small_window8_256"
 
 
 # ===============================================================
@@ -386,128 +403,19 @@ class VCDataset(Dataset):
 # Model
 # =======================================================================
 class VCNet(nn.Module):
-    def __init__(self, num_classes: int) -> None:
+    def __init__(
+        self, num_classes: int, arch: str = "Unet", encoder_name: str = "resnet18"
+    ) -> None:
         super().__init__()
-        self.contracting_11 = self._build_conv_block(in_channels=65, out_channels=64)
-        self.contracting_12 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.contracting_21 = self._build_conv_block(in_channels=64, out_channels=128)
-        self.contracting_22 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.contracting_31 = self._build_conv_block(in_channels=128, out_channels=256)
-        self.contracting_32 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.contracting_41 = self._build_conv_block(in_channels=256, out_channels=512)
-        self.contracting_42 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.middle = self._build_conv_block(in_channels=512, out_channels=1024)
-        self.expansive_11 = nn.ConvTranspose2d(
-            in_channels=1024,
-            out_channels=512,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
+        self.model = smp.create_model(
+            arch=arch,
+            encoder_name=encoder_name,
+            in_channels=65,
+            classes=num_classes,
         )
-        self.expansive_12 = self._build_conv_block(in_channels=1024, out_channels=512)
-        self.expansive_21 = nn.ConvTranspose2d(
-            in_channels=512,
-            out_channels=256,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
-        )
-        self.expansive_22 = self._build_conv_block(in_channels=512, out_channels=256)
-        self.expansive_31 = nn.ConvTranspose2d(
-            in_channels=256,
-            out_channels=128,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
-        )
-        self.expansive_32 = self._build_conv_block(in_channels=256, out_channels=128)
-        self.expansive_41 = nn.ConvTranspose2d(
-            in_channels=128,
-            out_channels=64,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
-        )
-        self.expansive_42 = self._build_conv_block(in_channels=128, out_channels=64)
-        self.output = nn.Conv2d(
-            in_channels=64,
-            out_channels=num_classes,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-        )
-
-    def _build_conv_block(self, in_channels: int, out_channels: int) -> nn.Sequential:
-        block = nn.Sequential(
-            nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ),
-            nn.ReLU(),
-            nn.BatchNorm2d(num_features=out_channels),
-            nn.Conv2d(
-                in_channels=out_channels,
-                out_channels=out_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            ),
-            nn.ReLU(),
-            nn.BatchNorm2d(num_features=out_channels),
-        )
-        return block
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (N, 64, 256, 256)
-        contracting_11_out = self.contracting_11(x)
-        # (N, 64, 128, 128)
-        contracting_12_out = self.contracting_12(contracting_11_out)
-        # (N, 128, 128, 128)
-        contracting_21_out = self.contracting_21(contracting_12_out)
-        # (N, 128, 64, 64)
-        contracting_22_out = self.contracting_22(contracting_21_out)
-        # (N, 256, 64, 64)
-        contracting_31_out = self.contracting_31(contracting_22_out)
-        # (N, 256, 32, 32)
-        contracting_32_out = self.contracting_32(contracting_31_out)
-        # (N, 512, 32, 32)
-        contracting_41_out = self.contracting_41(contracting_32_out)
-        # (N, 512, 16, 16)
-        contracting_42_out = self.contracting_42(contracting_41_out)
-        # (N, 1024, 16, 16)
-        middle_out = self.middle(contracting_42_out)
-        # (N, 512, 32, 32)
-        expansive_11_out = self.expansive_11(middle_out)
-        # (N, 1024, 32, 32) -> (N, 512, 32, 32)
-        expansive_12_out = self.expansive_12(
-            torch.cat([expansive_11_out, contracting_41_out], dim=1)
-        )
-        # (N, 256, 64, 64)
-        expansive_21_out = self.expansive_21(expansive_12_out)
-        # (N, 512, 64, 64) -> (N, 256, 64, 64)
-        expansive_22_out = self.expansive_22(
-            torch.cat([expansive_21_out, contracting_31_out], dim=1)
-        )
-        # (N, 128, 128, 128)
-        expansive_31_out = self.expansive_31(expansive_22_out)
-        # (N, 256, 128, 128) -> (N, 128, 128, 128)
-        expansive_32_out = self.expansive_32(
-            torch.cat([expansive_31_out, contracting_21_out], dim=1)
-        )
-        # (N, 64, 256, 256)
-        expansive_41_out = self.expansive_41(expansive_32_out)
-        # (N, 128, 256, 256) -> (N, 64, 256, 256)
-        expansive_42_out = self.expansive_42(
-            torch.cat([expansive_41_out, contracting_11_out], dim=1)
-        )
-        output = self.output(expansive_42_out)
+        output = self.model(x)
         return output
 
 
@@ -612,6 +520,55 @@ def split_cv(
     return data_fold
 
 
+def dice_coef_torch(
+    y_pred: torch.Tensor, y_true: torch.Tensor, beta: float = 0.5, smooth: float = 1e-5
+) -> torch.Tensor:
+    """Compute dice coefficient
+
+    Args:
+        y_pred (torch.Tensor): (N, 1, H, W)
+        y_true (torch.Tensor): (N, 1, H, W)
+        beta (float): beta. Defaults to 0.5.
+        smooth (float): smooth. Defaults to 1e-5.
+
+    Returns:
+        float: dice coefficient
+    """
+
+    # flatten label and prediction tensors
+    preds = y_pred.view(-1).float()
+    targets = y_true.view(-1).float()
+
+    y_true_count = targets.sum()
+    ctp = preds[targets == 1].sum()
+    cfp = preds[targets == 0].sum()
+    beta_square = beta**2
+    c_precision = ctp / (ctp + cfp + smooth)
+    c_recall = ctp / (y_true_count + smooth)
+    dice = (
+        (1 + beta_square)
+        * c_precision
+        * c_recall
+        / (beta_square * c_precision + c_recall + smooth)
+    )
+    return dice
+
+
+def calc_dice(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate dice score
+
+    Args:
+        y_pred (torch.Tensor): (N, 1, H, W)
+        y_true (torch.Tensor): (N, 1, H, W)
+    Returns:
+        dice (float): dice score
+    """
+    # dice = smp.losses.DiceLoss(mode="binary")(y_pred=y_pred, y_true=y_true).item()
+    dice = dice_coef_torch(y_pred=y_pred, y_true=y_true)
+    return dice
+
+
 # ==========================================================
 # training function
 # ==========================================================
@@ -623,9 +580,10 @@ def train(
 ) -> None:
     data_fold = split_cv(images=images, labels=labels, masks=masks)
     for fold in range(cfg.n_fold):
+        seed_everything(seed=cfg.random_state)
         print("\n" + "=" * 30 + f" Fold {fold} " + "=" * 30 + "\n")
 
-        net = VCNet(num_classes=1)
+        net = VCNet(num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name)
         net.to(device=cfg.device)
 
         criterion = nn.BCEWithLogitsLoss()
@@ -680,6 +638,7 @@ def train(
             div_factor=1e3,
             final_div_factor=1e3,
         )
+        scaler = torch.cuda.amp.grad_scaler.GradScaler(enabled=cfg.use_amp)
 
         valid_metrics = []
         learning_rates = []
@@ -693,12 +652,13 @@ def train(
                     image = image.to(cfg.device)
                     target = target.to(cfg.device)
 
-                    outputs = net(image)
+                    with torch.cuda.amp.autocast(enabled=cfg.use_amp):
+                        outputs = net(image)
+                        loss = criterion(outputs.squeeze(), target)
 
-                    loss = criterion(outputs.squeeze(), target)
-
-                    loss.backward()
-                    optimizer.step()
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
                     net.zero_grad()
 
                     running_loss += loss.item()
@@ -707,6 +667,8 @@ def train(
                     )
                     learning_rates.append(optimizer.param_groups[0]["lr"])
                     scheduler.step()
+
+                    wandb.log({f"fold{fold}_train_loss": loss.item()})
 
             valid_preds = []
             valid_targets = []
@@ -725,6 +687,8 @@ def train(
                     outputs = outputs.sigmoid()
                     valid_preds.append(outputs.to("cpu").detach().numpy())
                     valid_targets.append(target.to("cpu").detach().numpy())
+                    loss = criterion(outputs.squeeze(), target)
+                    wandb.log({f"fold{fold}_valid_loss": loss.item()})
 
             # 端を切る
             w_count = math.ceil(
@@ -742,6 +706,7 @@ def train(
             )
 
             pred_tile_image = concat_tile(tile_array)
+            dbg(f"{pred_tile_image.shape = }")
             pred_tile_image = np.where(
                 data_fold[fold]["valid_mask"][0] > 1,
                 pred_tile_image[
@@ -750,11 +715,21 @@ def train(
                 ],
                 0,
             )
+
+            label_img = data_fold[fold]["valid_label"][0]
+            dbg(f"{label_img.shape = }")
             auc = roc_auc_score(
-                data_fold[fold]["valid_label"][0].reshape(-1),
+                label_img.reshape(-1),
                 pred_tile_image.reshape(-1),
             )
+
+            dice = calc_dice(
+                y_pred=torch.tensor(pred_tile_image).unsqueeze(0).unsqueeze(0),
+                y_true=torch.tensor(label_img).unsqueeze(0),
+            )
             logger.info(f"ROC-AUC: {auc:.5f}")
+            logger.info(f"Dice: {dice:.5f}")
+            wandb.log({f"fold{fold}_RoC-AUC": auc, f"train_fold{fold}_Dice": dice})
             lr = optimizer.param_groups[0]["lr"]
             valid_metrics.append(lr)
             early_stopping(-auc, net)
@@ -783,9 +758,10 @@ def valid(cfg: CFG, data_fold: list[dict]) -> None:
     all_preds = []
     all_masks = []
     for fold in range(cfg.n_fold):
+        seed_everything(seed=cfg.random_state)
         print("=" * 15 + f"{fold}" + "=" * 15)
 
-        net = VCNet(num_classes=1)
+        net = VCNet(num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name)
         net.load_state_dict(
             torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth")
         )
@@ -848,7 +824,14 @@ def valid(cfg: CFG, data_fold: list[dict]) -> None:
         auc = roc_auc_score(
             data_fold[fold]["valid_label"][0].reshape(-1), pred_tile_image.reshape(-1)
         )
-        print("Auc: ", auc)
+
+        dice = calc_dice(
+            y_pred=torch.tensor(pred_tile_image).unsqueeze(0).unsqueeze(0),
+            y_true=torch.tensor(data_fold[fold]["valid_label"][0]).unsqueeze(0),
+        )
+        print("RoC-Auc: ", auc)
+        print("Dice: ", dice)
+        wandb.log({f"valid_fold{fold}_RoC_AUC_full": auc, f"val_fold{fold}_dice": dice})
         all_masks.append(data_fold[fold]["valid_label"][0].reshape(-1))
         all_preds.append(pred_tile_image.reshape(-1))
 
@@ -859,11 +842,16 @@ def valid(cfg: CFG, data_fold: list[dict]) -> None:
     plt.savefig(OUTPUT_DIR / cfg.exp_name / "flat_pred_hist.png")
 
     thr_list = []
+    best_score = -1
     for thr in np.arange(0.2, 0.6, 0.1):
         _val_pred = np.where(flat_preds > thr, 1, 0).astype(np.int8)
-        score = f1_score(flat_masks, _val_pred)
+        score = fbeta_score(flat_masks, _val_pred, beta=0.5)
+        if score > best_score:
+            best_score = score
         print(f"Threshold: {thr} --> Score: {score}")
+        wandb.log({"f05_score": score})
         thr_list.append({"thr": thr, "score": score})
+    wandb.log({f"fold{fold}_threshld_best_score": best_score})
 
 
 # ====================================================
@@ -883,7 +871,7 @@ def predict(cfg: CFG, test_data_dir: Path) -> np.ndarray:
 
     nets = []
     for fold in range(cfg.n_fold):
-        net = VCNet(num_classes=1)
+        net = VCNet(num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name)
         net.to(cfg.device)
         net.load_state_dict(
             torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth")
@@ -990,15 +978,25 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
 # =======================================================================
 def main() -> None:
     cfg = CFG()
+    seed_everything(seed=cfg.random_state)
     (OUTPUT_DIR / cfg.exp_name).mkdir(parents=True, exist_ok=True)
+    start_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    logger.info(f"Start Time = {start_time}")
 
     if IS_TRAIN:
+        wandb.init(
+            project="vesuvius_challenge",
+            config=asdict(cfg),
+            group=f"{cfg.arch}_{cfg.encoder_name}",
+            name=f"{cfg.exp_name}_{start_time}",
+        )
         images = get_surface_volume_images()
         image_labels = get_inklabels_images()
         image_masks = get_mask_images()
         data_fold = split_cv(images=images, labels=image_labels, masks=image_masks)
         train(cfg=cfg, images=images, labels=image_labels, masks=image_masks)
         valid(cfg, data_fold=data_fold)
+        wandb.finish()
 
     if MAKE_SUB:
         preds = test(cfg, threshold=0.4)
