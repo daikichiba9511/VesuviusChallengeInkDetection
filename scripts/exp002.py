@@ -52,9 +52,12 @@ warnings.simplefilter("ignore")
 
 
 IS_TRAIN = not Path("/kaggle/working").exists()
-logger.info(f"IS_TRAIN: {IS_TRAIN}")
-
 MAKE_SUB: bool = True
+SKIP_TRAIN = False
+
+logger.info(
+    f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}"
+)
 
 
 if IS_TRAIN:
@@ -100,7 +103,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp002_se_resnext50_32x4d"
+    exp_name = "exp002_se_resnext50_32x4d_epoch20"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -109,7 +112,7 @@ class CFG:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 3
-    epoch = 10
+    epoch = 20
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 10
@@ -151,6 +154,27 @@ def rle(image: np.ndarray, threshold: float = 0.5) -> tuple[np.ndarray, np.ndarr
 
     length = ends_idx - starts_idx
     return starts_idx, length
+
+
+def fast_rle(img) -> str:
+    """
+    Args:
+        img: 画像, (H, W, 3), 1 - mask, 0 - background
+    Returns:
+        rle: run-length as string formated
+    Reference:
+    [1]
+    https://www.kaggle.com/stainsby/fast-tested-rle
+    [2]
+    https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
+    """
+    pixels = img.flatten()
+    # pixels = (pixels >= thr).astype(int)
+
+    pixels = np.concatenate([[0], pixels, [0]])
+    runs = np.where(pixels[1:] != pixels[:-1])[0] + 1
+    runs[1::2] -= runs[::2]
+    return " ".join(str(x) for x in runs)
 
 
 def make_tile_array(
@@ -208,7 +232,6 @@ def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             for i in tqdm(range(65))
         ]
     )
-    print(f"{image1.shape =}, {image2.shape =}, {image3.shape =}")
     return image1, image2, image3
 
 
@@ -265,7 +288,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     # (h, w, in_chans)
     images = np.stack(images, axis=2)
-    dbg(f"{images.shape = }")
+    dbg(f"images.shape = {images.shape}")
 
     mask = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/inklabels.png"), 0)
     mask = np.pad(mask, pad_width=[(0, pad0), (0, pad1)], constant_values=0)
@@ -303,11 +326,12 @@ def get_train_valid_split(
         # image: (h, w, in_chans)
         # mask: (h, w)
         image, mask = read_image_mask(cfg=cfg, fragment_id=fragment_id)
-        dbg(f"fragment_id={fragment_id}, {image.shape = }, {mask.shape = }")
+        dbg(
+            f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}"
+        )
 
         x1_list = list(range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride))
         y1_list = list(range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride))
-        dbg(f"{len(x1_list) = }, {len(y1_list) = }")
         for y1 in y1_list:
             for x1 in x1_list:
                 y2 = y1 + cfg.tile_size
@@ -489,6 +513,7 @@ def build_model(cfg: CFG) -> VCNet:
         arch=cfg.arch,
         encoder_name=cfg.encoder_name,
         in_chans=cfg.in_chans,
+        weights=None,
     )
     return model
 
@@ -509,10 +534,12 @@ class EnsembleModel:
 
 def build_ensemble_model(cfg: CFG) -> EnsembleModel:
     ensemble_model = EnsembleModel(use_tta=cfg.use_tta)
+    model_dir = CP_DIR / cfg.exp_name if IS_TRAIN else CP_DIR
     for fold in range(1, cfg.n_fold + 1):
         _model = build_model(cfg)
         _model = _model.to(cfg.device)
-        model_path = CP_DIR / cfg.exp_name / f"checkpoint_{fold}.pth"
+        model_path = model_dir / f"checkpoint_{fold}.pth"
+        logger.info(f"Load model from {model_path}")
         state = torch.load(model_path)
         _model.load_state_dict(state)
         _model.eval()
@@ -1142,7 +1169,7 @@ def valid(cfg: CFG) -> None:
         all_preds.append(mask_preds.reshape(-1))
 
     flat_preds = np.hstack(all_preds).reshape(-1).astype(np.float32)
-    flat_masks = (np.hstack(all_masks).reshape(-1) / 255).astype(np.int8)
+    # flat_masks = (np.hstack(all_masks).reshape(-1) / 255).astype(np.int8)
 
     plt.hist(flat_preds, bins=50)
     plt.savefig(OUTPUT_DIR / cfg.exp_name / "flat_pred_hist.png")
@@ -1193,8 +1220,8 @@ def make_test_datast(cfg: CFG, fragment_id: str) -> tuple[DataLoader, np.ndarray
     y1_list = list(range(0, test_images.shape[0] - cfg.tile_size + 1, cfg.stride))
     x1_list = list(range(0, test_images.shape[1] - cfg.tile_size + 1, cfg.stride))
 
-    dbg(f"len(y1_list): {len(y1_list)}, {y1_list[:5] = }")
-    dbg(f"len(x1_list): {len(x1_list)}, {x1_list[:5] = }")
+    dbg(f"len(y1_list): {len(y1_list)}, {y1_list[:5]}")
+    dbg(f"len(x1_list): {len(x1_list)}, {x1_list[:5]}")
 
     test_image_list = []
     xyxy_list = []
@@ -1281,6 +1308,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     else:
         plt.imshow(mask_pred_count)
         plt.imshow(mask_pred)
+        plt.imshow(binary_mask)
         plt.show()
         plt.close("all")
     return mask_pred
@@ -1318,13 +1346,18 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
             plt.show()
 
         logger.info("start to process rle")
-        starts_idx, lengths = rle(pred_tile_image.copy(), threshold=threshold)
-        inklabels_rle = " ".join(map(str, sum(zip(starts_idx, lengths), ())))
-        if not IS_TRAIN:
+        # starts_idx, lengths = rle(pred_tile_image.copy(), threshold=threshold)
+        # dbg(f"starts_idx: {starts_idx[:10]}, lengths: {lengths[:10]}")
+        # inklabels_rle = " ".join(map(str, sum(tqdm(zip(starts_idx, lengths)), ())))
+        inklabels_rle = fast_rle(img=pred_tile_image)
+        if IS_TRAIN:
             logger.info(
                 f"ID: {str(fp).split('/')[-1]}, inklabels_rle: {inklabels_rle[:10]}"
             )
         preds.append({"Id": str(fp).split("/")[-1], "Predicted": inklabels_rle})
+        del pred_tile_image, inklabels_rle
+        gc.collect()
+        torch.cuda.empty_cache()
     return pd.DataFrame(preds)
 
 
@@ -1335,10 +1368,9 @@ def main() -> None:
     cfg = CFG()
     seed_everything(seed=cfg.random_state)
     (OUTPUT_DIR / cfg.exp_name).mkdir(parents=True, exist_ok=True)
-    start_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    logger.info(f"Start Time = {start_time}")
+    start_time = datetime.now()
+    logger.info(f"Start Time = {start_time.strftime('%Y-%m-%d-%H-%M-%S')}")
 
-    SKIP_TRAIN = False
     if IS_TRAIN and not SKIP_TRAIN:
         # if False:
         wandb.init(
@@ -1350,6 +1382,8 @@ def main() -> None:
         train(cfg=cfg)
         # valid(cfg=cfg)
         wandb.finish()
+        train_duration = datetime.now() - start_time
+        logger.info(f"Train Duration = {train_duration}")
 
     if MAKE_SUB:
         preds = test(cfg, threshold=THR)
@@ -1360,6 +1394,11 @@ def main() -> None:
             else OUTPUT_DIR / cfg.exp_name / "submission.csv"
         )
         preds.to_csv(save_path, index=False)
+        if SKIP_TRAIN:
+            test_duration = datetime.now() - start_time
+        else:
+            test_duration = datetime.now() - start_time - train_duration
+        logger.info(f"Test Duration = {test_duration}")
 
 
 if __name__ == "__main__":
