@@ -1506,6 +1506,9 @@ def main() -> None:
             test_duration = datetime.now() - start_time - train_duration
         logger.info(f"Test Duration = {test_duration}")
 
+    total_duration = datetime.now() - start_time
+    logger.info(f"Total Duration = {total_duration}")
+
 
 if __name__ == "__main__":
     main()
