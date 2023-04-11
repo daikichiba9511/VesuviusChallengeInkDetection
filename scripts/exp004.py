@@ -1,11 +1,6 @@
-"""exp003
+"""exp004
 
-- copy from exp003
-- 2.5D segmentation
-
-DIFF:
-
-- GradualWarmupScheduler
+copy from exp003
 
 Reference:
 [1]
@@ -79,7 +74,7 @@ else:
     OUTPUT_DIR = Path(".")
     CP_DIR = Path("/kaggle/input/ink-model")
 
-THR = 0.4
+THR = 0.5
 
 
 def to_pickle(obj: Any, filename: Path) -> None:
@@ -111,11 +106,12 @@ class CFG:
     # ================= Global cfg =====================
     exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup"
     random_state = 42
-    image_size = (224, 224)
     tile_size: int = 224
+    image_size = (tile_size, tile_size)
     stride: int = tile_size // 2
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
     # ================= Train cfg =====================
     n_fold = 3
     epoch = 10
@@ -127,7 +123,7 @@ class CFG:
     warmup_factor = 10
     lr = 1e-4 / warmup_factor
 
-    max_lr = 1e-5
+    # max_lr = 1e-5
     max_grad_norm = 1000.0
     loss = "BCEWithLogitsLoss"
 
@@ -406,7 +402,7 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                         A.GaussianBlur(),
                         A.MotionBlur(),
                     ],
-                    p=0.4,
+                    p=0.5,
                 ),
                 A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
                 A.CoarseDropout(
@@ -438,6 +434,22 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
         )
     else:
         raise ValueError(f"Invalid phase: {phase}")
+
+
+def mixup(images, labels, alpha: float = 0.2):
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"Invalid alpha: {alpha}")
+    if images.shape[0] != labels.shape[0]:
+        raise ValueError(
+            f"images.shape[0] != label.shape[0]: {images.shape[0]} != {labels.shape[0]}"
+        )
+
+    lambd = np.random.beta(alpha, alpha)
+    batch_size = images.shape[0]
+    rand_idx = torch.randperm(batch_size)
+    mixed_image = lambd * images + (1 - lambd) * images[rand_idx, :]
+    mixed_labels = lambd * labels + (1 - lambd) * labels[rand_idx, :]
+    return mixed_image, mixed_labels, lambd
 
 
 class VCDataset(Dataset):
@@ -804,7 +816,9 @@ def calc_cv(mask_gt, mask_pred):
     return best_dice, best_th
 
 
-def plot_dataset(cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray) -> None:
+def plot_dataset(
+    cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray, fold: int
+) -> None:
     """Plot dataset
 
     Args:
@@ -827,6 +841,9 @@ def plot_dataset(cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray) -
         aug_image = augmented["image"]
         aug_mask = augmented["mask"]
 
+        # mixup
+        # aug_image, aug_mask, lam = mixup(images=aug_image, labels=aug_mask, alpha=0.2)
+
         if mask.sum() == 0:
             continue
 
@@ -839,7 +856,7 @@ def plot_dataset(cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray) -
         ax[2].set_title("Augmented Image")
         ax[3].imshow(aug_mask, cmap="gray")
         ax[3].set_title("Augmented Mask")
-        fig.savefig(fname=OUTPUT_DIR / cfg.exp_name / f"dataset_{i}.png")
+        fig.savefig(fname=OUTPUT_DIR / cfg.exp_name / f"dataset_fold{fold}_{i}.png")
 
         plot_count += 1
         if plot_count >= 10:
@@ -1458,6 +1475,30 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
     return pd.DataFrame(preds)
 
 
+def visualize() -> None:
+    cfg = CFG()
+    for fold in range(1, cfg.n_fold + 1):
+        seed_everything(seed=cfg.random_state)
+        print("\n" + "=" * 30 + f" Fold {fold} " + "=" * 30 + "\n")
+        (
+            train_images,
+            train_labels,
+            valid_images,
+            valid_labels,
+            valid_xyxys,
+        ) = get_train_valid_split(cfg=cfg, valid_id=fold)
+        valid_xyxys = np.array(valid_xyxys)
+
+        valid_mask_gt = cv2.imread(str(DATA_DIR / f"train/{fold}/inklabels.png"), 0)
+        valid_mask_gt = valid_mask_gt / 255
+        pad0 = cfg.tile_size - valid_mask_gt.shape[0] % cfg.tile_size
+        pad1 = cfg.tile_size - valid_mask_gt.shape[1] % cfg.tile_size
+        valid_mask_gt = np.pad(valid_mask_gt, ((0, pad0), (0, pad1)), constant_values=0)
+        plot_dataset(
+            cfg=cfg, train_images=train_images, train_labels=train_labels, fold=fold
+        )
+
+
 # =======================================================================
 # main part
 # =======================================================================
@@ -1499,4 +1540,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    visualize()
+    # main()
