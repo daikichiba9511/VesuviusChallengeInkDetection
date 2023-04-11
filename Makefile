@@ -28,5 +28,8 @@ format: ## auto format
 test: ## run test with pytest
 	poetry run pytest -c tests
 
+clean:
+	rm -rf ./output/* wandb/*
+
 help:  ## Show all of tasks
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

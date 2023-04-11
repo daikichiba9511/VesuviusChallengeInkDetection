@@ -6,3 +6,4 @@ notebooks
 docs
 wandb
 .venv
+.vscode

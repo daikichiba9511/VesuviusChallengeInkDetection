@@ -1,6 +1,6 @@
-"""exp004
+"""exp005
 
-copy from exp003
+- copy from exp003
 
 Reference:
 [1]
@@ -25,7 +25,6 @@ from typing import Any, Callable
 
 import albumentations as A
 import cv2
-import ipdb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -75,7 +74,7 @@ else:
     OUTPUT_DIR = Path(".")
     CP_DIR = Path("/kaggle/input/ink-model")
 
-THR = 0.5
+THR = 0.4
 
 
 def to_pickle(obj: Any, filename: Path) -> None:
@@ -105,32 +104,30 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp004_Unet++_se_resnext50_32x4d_gradual_warmup_adding_alb"
+    exp_name = "exp005_Unet++_se_resnext50_32x4d_356x356"
     random_state = 42
-    tile_size: int = 224
+    tile_size: int = 384  # 1.714 * 224
     image_size = (tile_size, tile_size)
     stride: int = tile_size // 2
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
     # ================= Train cfg =====================
     n_fold = 3
     epoch = 10
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 10
-    mixup = True
 
     scheduler = "GradualWarmupScheduler"
     warmup_factor = 10
     lr = 1e-4 / warmup_factor
 
-    # max_lr = 1e-5
+    max_lr = 1e-5
     max_grad_norm = 1000.0
     loss = "BCEWithLogitsLoss"
 
     # ================= Test cfg =====================
-    use_tta = False
+    use_tta = True
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
@@ -393,12 +390,6 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
     if phase == "train":
         return A.Compose(
             [
-                A.RandomResizedCrop(
-                    height=cfg.image_size[0],
-                    width=cfg.image_size[0],
-                    p=0.5,
-                    scale=(0.5, 1.0),
-                ),
                 A.Resize(cfg.image_size[0], cfg.image_size[1]),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
@@ -410,9 +401,8 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                         A.GaussianBlur(),
                         A.MotionBlur(),
                     ],
-                    p=0.5,
+                    p=0.4,
                 ),
-                A.MedianBlur(p=0.5),
                 A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
                 A.CoarseDropout(
                     max_holes=1,
@@ -421,14 +411,6 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                     fill_value=0,
                     p=0.5,
                 ),
-                A.Downscale(scale_min=0.5, scale_max=0.9, p=0.5),
-                A.Cutout(
-                    num_holes=1,
-                    max_h_size=int(cfg.tile_size * 0.5),
-                    max_w_size=int(cfg.tile_size * 0.5),
-                    p=0.5,
-                ),
-                A.RandomContrast(limit=0.2, p=0.5),
                 A.Normalize(mean=[0] * cfg.in_chans, std=[1] * cfg.in_chans),
                 ToTensorV2(transpose_mask=True),
             ]
@@ -451,36 +433,6 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
         )
     else:
         raise ValueError(f"Invalid phase: {phase}")
-
-
-def mixup(
-    images: torch.Tensor, labels: torch.Tensor, alpha: float = 0.2
-) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
-    """
-    Args:
-        images: (N, C, H, W)
-        labels: (N, H, W)
-        alpha: beta分布のパラメータ
-
-    Returns:
-        mixed_image: (N, C, H, W)
-        mixed_labels: (N, H, W), mask
-        lambd: 重み
-        rand_idx: 乱数のインデックス
-    """
-    if not (0.0 <= alpha <= 1.0):
-        raise ValueError(f"Invalid alpha: {alpha}")
-
-    lambd = np.random.beta(alpha, alpha)
-    batch_size = images.shape[0]
-    rand_idx = torch.randperm(batch_size)
-
-    # (N, H, W)
-    mixed_image = lambd * images + (1 - lambd) * images[rand_idx, ...]
-    # (1, H, W)
-    # 混ぜようがない
-    mixed_labels = labels
-    return mixed_image, mixed_labels, lambd, rand_idx
 
 
 class VCDataset(Dataset):
@@ -529,8 +481,6 @@ class VCDataset(Dataset):
                 augmented = self.transform_fn(image=image, mask=mask)
                 image = augmented["image"]
                 mask = augmented["mask"]
-                if self.cfg.mixup:
-                    image, mask, _, _ = mixup(image, mask)
             return image, mask
 
 
@@ -627,18 +577,12 @@ class EarlyStopping:
         self.save_dir = save_dir
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-    def __call__(
-        self, val_loss: float, model: nn.Module, direction: str = "max"
-    ) -> None:
-        if direction not in ["min", "max"]:
-            raise ValueError(f"Invalid direction {direction}. Must be min or max.")
-        score = -val_loss if direction == "min" else val_loss
-
+    def __call__(self, val_loss: float, model: nn.Module) -> None:
+        score = -val_loss
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss=val_loss, model=model)
 
-        # 更新しない
         if score < self.best_score + self.delta:
             self.counter += 1
             self.logger_fn(
@@ -646,8 +590,6 @@ class EarlyStopping:
             )
             if self.counter >= self.patience:
                 self.early_stop = True
-
-        # 更新する
         else:
             self.logger_fn(
                 f"Detected Increasing Score: best score {self.best_score} --> {score}"
@@ -833,7 +775,7 @@ def calc_fbeta(mask, mask_pred):
 
     best_th = 0.0
     best_dice = 0.0
-    for th in np.arange(0.1, 0.6, 0.05):
+    for th in np.arange(0.1, 0.6, 0.1):
         dice = fbeta_numpy(mask, (mask_pred > th).astype(np.int16), beta=0.5)
         logger.info(f"th: {th}, dice: {dice}")
         if dice > best_dice:
@@ -857,9 +799,7 @@ def calc_cv(mask_gt, mask_pred):
     return best_dice, best_th
 
 
-def plot_dataset(
-    cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray, fold: int
-) -> None:
+def plot_dataset(cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray) -> None:
     """Plot dataset
 
     Args:
@@ -882,9 +822,6 @@ def plot_dataset(
         aug_image = augmented["image"]
         aug_mask = augmented["mask"]
 
-        # mixup
-        # aug_image, aug_mask, lam, aug_idx = mixup(images=aug_image, labels=aug_mask, alpha=0.2)
-
         if mask.sum() == 0:
             continue
 
@@ -897,7 +834,7 @@ def plot_dataset(
         ax[2].set_title("Augmented Image")
         ax[3].imshow(aug_mask, cmap="gray")
         ax[3].set_title("Augmented Mask")
-        fig.savefig(fname=OUTPUT_DIR / cfg.exp_name / f"dataset_fold{fold}_{i}.png")
+        fig.savefig(fname=OUTPUT_DIR / cfg.exp_name / f"dataset_{i}.png")
 
         plot_count += 1
         if plot_count >= 10:
@@ -1240,7 +1177,6 @@ def train(cfg: CFG) -> None:
     )
     logger.info("OOF mean dice: {}".format(mean_dice))
     wandb.log({"OOF mean dice": mean_dice})
-
     torch.cuda.empty_cache()
     gc.collect()
     logger.info("Training has finished.")
@@ -1525,32 +1461,6 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
     return pd.DataFrame(preds)
 
 
-def visualize() -> None:
-    cfg = CFG()
-    (OUTPUT_DIR / cfg.exp_name).mkdir(exist_ok=True, parents=True)
-
-    for fold in range(1, cfg.n_fold + 1):
-        seed_everything(seed=cfg.random_state)
-        print("\n" + "=" * 30 + f" Fold {fold} " + "=" * 30 + "\n")
-        (
-            train_images,
-            train_labels,
-            valid_images,
-            valid_labels,
-            valid_xyxys,
-        ) = get_train_valid_split(cfg=cfg, valid_id=fold)
-        valid_xyxys = np.array(valid_xyxys)
-
-        valid_mask_gt = cv2.imread(str(DATA_DIR / f"train/{fold}/inklabels.png"), 0)
-        valid_mask_gt = valid_mask_gt / 255
-        pad0 = cfg.tile_size - valid_mask_gt.shape[0] % cfg.tile_size
-        pad1 = cfg.tile_size - valid_mask_gt.shape[1] % cfg.tile_size
-        valid_mask_gt = np.pad(valid_mask_gt, ((0, pad0), (0, pad1)), constant_values=0)
-        plot_dataset(
-            cfg=cfg, train_images=train_images, train_labels=train_labels, fold=fold
-        )
-
-
 # =======================================================================
 # main part
 # =======================================================================
@@ -1592,5 +1502,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # visualize()
     main()

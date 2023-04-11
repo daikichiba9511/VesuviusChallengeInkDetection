@@ -109,7 +109,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup"
+    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup_rerun"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -583,7 +583,7 @@ class EarlyStopping:
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def __call__(self, val_loss: float, model: nn.Module) -> None:
-        score = -val_loss
+        score = val_loss
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss=val_loss, model=model)
@@ -1173,6 +1173,15 @@ def train(cfg: CFG) -> None:
         axes[2].imshow((mask_preds >= best_th).astype(np.uint8))
         axes[2].set_title("Pred with threshold")
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
+
+    mean_dice = np.mean(
+        [
+            torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"]
+            for fold in range(1, cfg.n_fold + 1)
+        ]
+    )
+    logger.info("OOF mean dice: {}".format(mean_dice))
+    wandb.log({"OOF mean dice": mean_dice})
 
     torch.cuda.empty_cache()
     gc.collect()
