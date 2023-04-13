@@ -1,11 +1,7 @@
-"""exp003
+"""exp009
 
 - copy from exp003
 - 2.5D segmentation
-
-DIFF:
-
-- GradualWarmupScheduler
 
 Reference:
 [1]
@@ -107,7 +103,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup_rerun"
+    exp_name = "exp009_Unet_efficientnet_b3_noisystudent"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -133,9 +129,12 @@ class CFG:
     use_tta = True
 
     # ================= Model =====================
-    arch: str = "UnetPlusPlus"
-    encoder_name: str = "se_resnext50_32x4d"
+    arch: str = "Unet"
+    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "timm-efficientnet-b3"
     in_chans: int = 6
+    # weights: str = "imagenet"
+    weights = "noisy-student"
 
 
 # ===============================================================
@@ -939,7 +938,9 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
         scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
-        scheduler = GradualWarmupSchedulerV2(optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        scheduler = GradualWarmupSchedulerV2(
+            optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine
+        )
         return scheduler
 
     raise ValueError(f"Invalid scheduler: {cfg.scheduler}")
@@ -1017,6 +1018,7 @@ def train(cfg: CFG) -> None:
             arch=cfg.arch,
             encoder_name=cfg.encoder_name,
             in_chans=cfg.in_chans,
+            weights=cfg.weights,
         )
         net = net.to(device=cfg.device)
 

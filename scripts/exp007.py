@@ -1,11 +1,6 @@
-"""exp003
+"""exp007
 
 - copy from exp003
-- 2.5D segmentation
-
-DIFF:
-
-- GradualWarmupScheduler
 
 Reference:
 [1]
@@ -58,7 +53,7 @@ warnings.simplefilter("ignore")
 
 
 IS_TRAIN = not Path("/kaggle/working").exists()
-MAKE_SUB: bool = True
+MAKE_SUB: bool = False
 SKIP_TRAIN = False
 
 logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}")
@@ -107,7 +102,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup_rerun"
+    exp_name = "exp007_Unet++_se_resnext50_32x4d_dice_loss"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -122,12 +117,15 @@ class CFG:
     patience = 10
 
     scheduler = "GradualWarmupScheduler"
+    # scheduler = "OneCycleLR"
+
     warmup_factor = 10
     lr = 1e-4 / warmup_factor
 
     max_lr = 1e-5
     max_grad_norm = 1000.0
-    loss = "BCEWithLogitsLoss"
+    # loss = "BCEWithLogitsLoss"
+    loss = "DiceLoss"
 
     # ================= Test cfg =====================
     use_tta = True
@@ -730,7 +728,7 @@ def calc_fbeta(mask, mask_pred):
 
     best_th = 0.0
     best_dice = 0.0
-    for th in np.arange(0.1, 0.6, 0.05):
+    for th in np.arange(0.1, 0.6, 0.1):
         dice = fbeta_numpy(mask, (mask_pred > th).astype(np.int16), beta=0.5)
         logger.info(f"th: {th}, dice: {dice}")
         if dice > best_dice:
@@ -939,7 +937,7 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
         scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
-        scheduler = GradualWarmupSchedulerV2(optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        scheduler = GradualWarmupScheduler(optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
         return scheduler
 
     raise ValueError(f"Invalid scheduler: {cfg.scheduler}")
@@ -948,6 +946,10 @@ def get_scheduler(
 def get_loss(cfg: CFG) -> nn.Module:
     if cfg.loss == "BCEWithLogitsLoss":
         loss = nn.BCEWithLogitsLoss()
+        return loss
+
+    if cfg.loss == "DiceLoss":
+        loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
         return loss
 
     raise ValueError(f"Invalid loss: {cfg.loss}")

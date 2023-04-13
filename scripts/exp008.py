@@ -1,11 +1,11 @@
-"""exp003
+"""exp008
 
 - copy from exp003
 - 2.5D segmentation
 
 DIFF:
 
-- GradualWarmupScheduler
+- Denoise
 
 Reference:
 [1]
@@ -58,7 +58,7 @@ warnings.simplefilter("ignore")
 
 
 IS_TRAIN = not Path("/kaggle/working").exists()
-MAKE_SUB: bool = True
+MAKE_SUB: bool = False
 SKIP_TRAIN = False
 
 logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}")
@@ -107,16 +107,22 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup_rerun"
+    exp_name = "exp008_Unet++_se_resnext50_32x4d_gradual_denoise_and_edge_enhance"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
     stride: int = tile_size // 2
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # ================= Data cfg =====================
+    do_denoise_image = True
+    gausian_kernel_size = (3, 3)
+    median_kernel_size = 5
+    sobel_kernel_size = (3, 3)
+
     # ================= Train cfg =====================
     n_fold = 3
-    epoch = 10
+    epoch = 10 * 2
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 10
@@ -136,6 +142,7 @@ class CFG:
     arch: str = "UnetPlusPlus"
     encoder_name: str = "se_resnext50_32x4d"
     in_chans: int = 6
+    weights = "imagenet"
 
 
 # ===============================================================
@@ -217,6 +224,68 @@ def concat_tile(image_list_2d: list[np.ndarray]) -> np.ndarray:
 # ===============================================================
 # Data
 # ===============================================================
+def denoise_image(cfg: CFG, image: np.ndarray) -> np.ndarray:
+    """画像のノイズを除去する
+
+    Args:
+        image: 画像, (h, w)
+
+    Retruns:
+        image: ノイズ除去後の画像, (h, w)
+
+    Example:
+        >>> image = cv2.imread("image.tif", 0)
+        >>> denoised_image = denoise_image(cfg, image)
+    """
+    # 中央値フィルタ
+    median_kernel_size = cfg.median_kernel_size
+    image = cv2.medianBlur(image, median_kernel_size)
+
+    return image
+
+
+def edge_enhance_image(cfg: CFG, image: np.ndarray) -> np.ndarray:
+    """画像のエッジを強調する
+
+    Args:
+        image: 画像, (h, w)
+
+    Retruns:
+        image: エッジ強調後の画像, (h, w)
+    """
+    gausian_kernel_size = cfg.gausian_kernel_size
+    image = cv2.GaussianBlur(image, gausian_kernel_size)
+
+    # TODO: scaleやdeltaを調整しても良いかも
+    sobel_kernel_size = cfg.sobel_kernel_size
+    image = cv2.Sobel(image, ddepth=cv2.CV_64F, dx=1, dy=1, ksize=sobel_kernel_size)
+    return image
+
+
+def preprocess_img(cfg: CFG, image: np.ndarray) -> np.ndarray:
+    """画像の前処理を行う
+
+    Args:
+        image: 画像, (h, w)
+
+    Retruns:
+        image: 前処理後の画像, (h, w)
+
+    Example:
+        >>> image = cv2.imread("image.tif", 0)
+        >>> preprocessed_image = preprocess_img(cfg, image)
+    """
+    if image.ndim != 2:
+        raise ValueError(f"image.shape: {image.shape}")
+
+    # ノイズ除去
+    image = denoise_image(cfg, image)
+
+    # エッジ強調
+    image = edge_enhance_image(cfg, image)
+    return image
+
+
 def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     image1 = np.stack([cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
 
@@ -273,6 +342,8 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
         pad1 = cfg.tile_size - image.shape[1] % cfg.tile_size
 
         image = np.pad(image, pad_width=[(0, pad0), (0, pad1)], constant_values=0)
+        if cfg.do_denoise_image:
+            image = denoise_image(cfg, image)
         images.append(image)
 
     # (h, w, in_chans)
@@ -369,16 +440,16 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.75),
-                A.ShiftScaleRotate(p=0.75),
+                A.ShiftScaleRotate(scale_limit=0.2, p=0.75),
                 A.OneOf(
                     [
-                        A.GaussNoise(var_limit=[10, 50]),
-                        A.GaussianBlur(),
+                        A.GaussNoise(var_limit=[10, 50]),  # ガウスノイズを追加
+                        A.GaussianBlur(),  # ランダムなカーネルサイズでガウシアンフィルタをかける（高周波成分除去→エッジを残しつつノイズ除去
                         A.MotionBlur(),
                     ],
-                    p=0.4,
+                    p=0.5,
                 ),
-                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),  # 光学的な歪みを追加
                 A.CoarseDropout(
                     max_holes=1,
                     max_width=int(cfg.image_size[1] * 0.3),
@@ -730,7 +801,7 @@ def calc_fbeta(mask, mask_pred):
 
     best_th = 0.0
     best_dice = 0.0
-    for th in np.arange(0.1, 0.6, 0.05):
+    for th in np.arange(0.1, 0.6, 0.1):
         dice = fbeta_numpy(mask, (mask_pred > th).astype(np.int16), beta=0.5)
         logger.info(f"th: {th}, dice: {dice}")
         if dice > best_dice:
@@ -926,6 +997,8 @@ def get_scheduler(
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epoch, eta_min=1e-6)
         return scheduler
     if cfg.scheduler == "OneCycleLR":
+        if step_per_epoch is None:
+            raise ValueError("step_per_epoch must be specified for OneCycleLR")
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer=optimizer,
             epochs=cfg.epoch,
@@ -939,7 +1012,9 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
         scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
-        scheduler = GradualWarmupSchedulerV2(optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        scheduler = GradualWarmupSchedulerV2(
+            optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine
+        )
         return scheduler
 
     raise ValueError(f"Invalid scheduler: {cfg.scheduler}")
@@ -1013,10 +1088,7 @@ def train(cfg: CFG) -> None:
         valid_mask_gt = np.pad(valid_mask_gt, ((0, pad0), (0, pad1)), constant_values=0)
 
         net = VCNet(
-            num_classes=1,
-            arch=cfg.arch,
-            encoder_name=cfg.encoder_name,
-            in_chans=cfg.in_chans,
+            num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name, in_chans=cfg.in_chans, weights=cfg.weights
         )
         net = net.to(device=cfg.device)
 
@@ -1138,10 +1210,7 @@ def valid(cfg: CFG) -> None:
         valid_xyxys = np.stack(valid_xyxys, axis=0)
 
         net = VCNet(
-            num_classes=1,
-            arch=cfg.arch,
-            encoder_name=cfg.encoder_name,
-            in_chans=cfg.in_chans,
+            num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name, in_chans=cfg.in_chans, weights=cfg.weights
         )
         net.load_state_dict(torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth"))
         net = net.to(cfg.device)

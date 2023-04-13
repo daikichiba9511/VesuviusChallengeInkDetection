@@ -1,11 +1,7 @@
-"""exp003
+"""exp006
 
 - copy from exp003
 - 2.5D segmentation
-
-DIFF:
-
-- GradualWarmupScheduler
 
 Reference:
 [1]
@@ -16,12 +12,14 @@ https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
 from __future__ import annotations
 
 import gc
+import itertools
 import math
 import multiprocessing as mp
 import os
 import pickle
 import random
 import ssl
+import time
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -29,7 +27,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 import albumentations as A
+import cupy as cp
 import cv2
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -58,7 +58,7 @@ warnings.simplefilter("ignore")
 
 
 IS_TRAIN = not Path("/kaggle/working").exists()
-MAKE_SUB: bool = True
+MAKE_SUB: bool = False
 SKIP_TRAIN = False
 
 logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}")
@@ -75,7 +75,7 @@ else:
     INPUT_DIR = ROOT_DIR / "input"
     DATA_DIR = ROOT_DIR / "input" / "vesuvius-challenge-ink-detection"
     OUTPUT_DIR = Path(".")
-    CP_DIR = Path("/kaggle/input/ink-model")
+    CP_D5R = Path("/kaggle/input/ink-model")
 
 THR = 0.4
 
@@ -114,6 +114,17 @@ class CFG:
     stride: int = tile_size // 2
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # ================= Data cfg =====================
+    # denoise
+    iter_num = 50
+    fidelity = 150
+    mu = 1
+    sparsity_scale = 10
+    continuity_scale = 0.5
+
+    prallel_denoise = True
+
     # ================= Train cfg =====================
     n_fold = 3
     epoch = 10
@@ -217,6 +228,190 @@ def concat_tile(image_list_2d: list[np.ndarray]) -> np.ndarray:
 # ===============================================================
 # Data
 # ===============================================================
+xp = cp
+delta_lookup = {
+    "xx": xp.array([[1, -2, 1]], dtype=float),
+    "yy": xp.array([[1], [-2], [1]], dtype=float),
+    "xy": xp.array([[1, -1], [-1, 1]], dtype=float),
+}
+
+
+def operate_derivative(img_shape, pair):
+    assert len(img_shape) == 2
+    delta = delta_lookup[pair]
+    fft = xp.fft.fftn(delta, img_shape)
+    return fft * xp.conj(fft)
+
+
+def soft_threshold(vector, threshold):
+    """Soft thresholding function.
+
+    Args:
+        vector: (r, n)
+        threshold: float
+
+    Returns:
+        (r, n)
+    """
+    return xp.sign(vector) * xp.maximum(xp.abs(vector) - threshold, 0)
+
+
+def back_diff(input_image, dim):
+    """Backward difference along a given dimension.
+
+    Args:
+        input_image: (r, n)
+        dim: 0 or 1
+
+    Returns:
+        (r, n)
+    """
+    assert dim in (0, 1)
+    r, n = xp.shape(input_image)
+    size = xp.array((r, n))
+    position = xp.zeros(2, dtype=int)
+    temp1 = xp.zeros((r + 1, n + 1), dtype=float)
+    temp2 = xp.zeros((r + 1, n + 1), dtype=float)
+
+    temp1[position[0] : size[0], position[1] : size[1]] = input_image
+    temp2[position[0] : size[0], position[1] : size[1]] = input_image
+
+    size[dim] += 1
+    position[dim] += 1
+    temp2[position[0] : size[0], position[1] : size[1]] = input_image
+    temp1 -= temp2
+    size[dim] -= 1
+    return temp1[0 : size[0], 0 : size[1]]
+
+
+def forward_diff(input_image, dim):
+    """Forward difference along a given dimension.
+
+    Args:
+        input_image: (r, n)
+        dim: 0 or 1
+
+    Returns:
+        (r, n)w
+
+    """
+    assert dim in (0, 1)
+    r, n = xp.shape(input_image)
+    size = xp.array((r, n))
+    position = xp.zeros(2, dtype=int)
+    temp1 = xp.zeros((r + 1, n + 1), dtype=float)
+    temp2 = xp.zeros((r + 1, n + 1), dtype=float)
+
+    size[dim] += 1
+    position[dim] += 1
+
+    temp1[position[0] : size[0], position[1] : size[1]] = input_image
+    temp2[position[0] : size[0], position[1] : size[1]] = input_image
+
+    size[dim] -= 1
+    temp2[0 : size[0], 0 : size[1]] = input_image
+    temp1 -= temp2
+    size[dim] += 1
+    return -temp1[position[0] : size[0], position[1] : size[1]]
+
+
+def iter_deriv(input_image, b, scale, mu, dim1, dim2):
+    g = back_diff(forward_diff(input_image, dim1), dim2)
+    d = soft_threshold(g + b, 1 / mu)
+    b = b + (g - d)
+    L = scale * back_diff(forward_diff(d - b, dim2), dim1)
+    return L, b
+
+
+def iter_xx(*args):
+    return iter_deriv(*args, dim1=1, dim2=1)
+
+
+def iter_yy(*args):
+    return iter_deriv(*args, dim1=0, dim2=0)
+
+
+def iter_xy(*args):
+    return iter_deriv(*args, dim1=0, dim2=1)
+
+
+def iter_sparse(input_image, bsparse, scale, mu):
+    d = soft_threshold(input_image + bsparse, 1 / mu)
+    bsparse = bsparse + (input_image - d)
+    Lsparse = scale * (d - bsparse)
+    return Lsparse, bsparse
+
+
+def denoise_image(
+    input_image: np.ndarray | cp.ndarray,
+    iter_num: int = 100,
+    fidelity: int = 150,
+    sparsity_scale: int = 10,
+    continuity_scale: float = 0.5,
+    mu: int = 1,
+) -> np.ndarray | cp.ndarray:
+    """画像のノイズ除去
+
+    Args:
+        input_image: ノイズ除去する画像
+        iter_num: 繰り返し回数
+        fidelity: ノイズ除去の信頼度
+        sparsity_scale: スパース性の強さ
+        continuity_scale: 連続性の強さ
+        mu: ラグランジュ乗数
+
+    Returns:
+        ノイズ除去後の画像
+    """
+    image_size = xp.shape(input_image)
+    # print("Initialize denoising")
+    norm_array = (
+        operate_derivative(image_size, "xx")
+        + operate_derivative(image_size, "yy")
+        + 2 * operate_derivative(image_size, "xy")
+    )
+    norm_array += (fidelity / mu) + sparsity_scale**2
+    b_arrays = {
+        "xx": xp.zeros(image_size, dtype=float),
+        "yy": xp.zeros(image_size, dtype=float),
+        "xy": xp.zeros(image_size, dtype=float),
+        "L1": xp.zeros(image_size, dtype=float),
+    }
+    g_update = xp.multiply(fidelity / mu, input_image)
+    for i in range(iter_num):
+        # print(f"Starting iteration {i+1}")
+        g_update = xp.fft.fftn(g_update)
+        if i == 0:
+            g = xp.fft.ifftn(g_update / (fidelity / mu)).real
+        else:
+            g = xp.fft.ifftn(xp.divide(g_update, norm_array)).real
+        g_update = xp.multiply((fidelity / mu), input_image)
+
+        # print("XX update")
+        L, b_arrays["xx"] = iter_xx(g, b_arrays["xx"], continuity_scale, mu)
+        g_update += L
+
+        # print("YY update")
+        L, b_arrays["yy"] = iter_yy(g, b_arrays["yy"], continuity_scale, mu)
+        g_update += L
+
+        # print("XY update")
+        L, b_arrays["xy"] = iter_xy(g, b_arrays["xy"], 2 * continuity_scale, mu)
+        g_update += L
+
+        # print("L1 update")
+        L, b_arrays["L1"] = iter_sparse(g, b_arrays["L1"], sparsity_scale, mu)
+        g_update += L
+
+    g_update = xp.fft.fftn(g_update)
+    g = xp.fft.ifftn(xp.divide(g_update, norm_array)).real
+
+    g[g < 0] = 0
+    g -= g.min()
+    g /= g.max()
+    return g
+
+
 def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     image1 = np.stack([cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
 
@@ -311,20 +506,68 @@ def get_train_valid_split(
         image, mask = read_image_mask(cfg=cfg, fragment_id=fragment_id)
         dbg(f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}")
 
-        x1_list = list(range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride))
-        y1_list = list(range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride))
-        for y1 in y1_list:
-            for x1 in x1_list:
-                y2 = y1 + cfg.tile_size
-                x2 = x1 + cfg.tile_size
+        start = time.time()
 
-                if fragment_id == valid_id:
-                    valid_images.append(image[y1:y2, x1:x2])
-                    valid_masks.append(mask[y1:y2, x1:x2, None])
-                    valid_xyxys.append([x1, y1, x2, y2])
-                else:
-                    train_images.append(image[y1:y2, x1:x2])
-                    train_masks.append(mask[y1:y2, x1:x2, None])
+        def _denoise_image(image, cfg, i):
+            """in_chans枚の画像を処理する
+
+            Args:
+                image_slice: 1枚の画像
+            """
+            image_slice = image[y1:y2, x1:x2, i]
+            denoised_image = denoise_image(
+                input_image=xp.array(image_slice),
+                iter_num=cfg.iter_num,
+                fidelity=cfg.fidelity,
+                mu=cfg.mu,
+                sparsity_scale=cfg.sparsity_scale,
+                continuity_scale=cfg.continuity_scale,
+            )
+            return i, cp.asnumpy(denoised_image).astype(np.float32)
+
+        for y1, x1 in itertools.product(
+            range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride),
+            range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride),
+        ):
+            y2 = y1 + cfg.tile_size
+            x2 = x1 + cfg.tile_size
+
+            # parallel denoise image using joblib
+            if cfg.parallel_denosing:
+                image_chunck = joblib.Parallel(n_jobs=cfg.n_jobs)(
+                    joblib.delayed(_denoise_image)(image, cfg, i) for i in range(cfg.in_chans)
+                )
+                image_chunck = sorted(image_chunck, key=lambda x: x[0])
+                image_chunck = np.stack([x[1] for x in image_chunck], axis=2, dtype=np.float32)
+
+            else:
+                image_chunck = []
+                for i in range(cfg.in_chans):
+                    image_slice = image[y1:y2, x1:x2, i]
+                    denoised_image = denoise_image(
+                        input_image=xp.array(image_slice),
+                        iter_num=cfg.iter_num,
+                        fidelity=cfg.fidelity,
+                        mu=cfg.mu,
+                        sparsity_scale=cfg.sparsity_scale,
+                        continuity_scale=cfg.continuity_scale,
+                    )
+                    image_chunck.append(cp.asnumpy(denoised_image).astype(np.float32))
+                    image_chunck = np.stack(image_chunck, axis=2, dtype=np.float32)
+
+            assert image_chunck.shape[2] == cfg.in_chans, f"{image_chunck.shape}"
+
+            if fragment_id == valid_id:
+                valid_images.append(image_chunck)
+                valid_masks.append(mask[y1:y2, x1:x2, None])
+                valid_xyxys.append([x1, y1, x2, y2])
+            else:
+                train_images.append(image_chunck)
+                train_masks.append(mask[y1:y2, x1:x2, None])
+
+    tokenize_duration = time.time() - start
+    logger.info(f"tokenize_duration = {tokenize_duration:.3f} sec")
+
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
 
 
@@ -730,7 +973,7 @@ def calc_fbeta(mask, mask_pred):
 
     best_th = 0.0
     best_dice = 0.0
-    for th in np.arange(0.1, 0.6, 0.05):
+    for th in np.arange(0.1, 0.6, 0.1):
         dice = fbeta_numpy(mask, (mask_pred > th).astype(np.int16), beta=0.5)
         logger.info(f"th: {th}, dice: {dice}")
         if dice > best_dice:
@@ -939,7 +1182,7 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
         scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
-        scheduler = GradualWarmupSchedulerV2(optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        scheduler = GradualWarmupScheduler(optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
         return scheduler
 
     raise ValueError(f"Invalid scheduler: {cfg.scheduler}")
@@ -1420,4 +1663,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()
