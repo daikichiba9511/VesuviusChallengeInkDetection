@@ -103,7 +103,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp009_Unet_efficientnet_b3_noisystudent"
+    exp_name = "exp009_Unet++_efficientnet_b3_noisystudent"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -129,7 +129,7 @@ class CFG:
     use_tta = True
 
     # ================= Model =====================
-    arch: str = "Unet"
+    arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
     encoder_name: str = "timm-efficientnet-b3"
     in_chans: int = 6

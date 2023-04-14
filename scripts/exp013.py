@@ -1,11 +1,11 @@
-"""exp003
+"""exp013
 
-- copy from exp003
+- copy from exp010
 - 2.5D segmentation
 
 DIFF:
 
-- GradualWarmupScheduler
+- cutout
 
 Reference:
 [1]
@@ -58,7 +58,7 @@ warnings.simplefilter("ignore")
 
 
 IS_TRAIN = not Path("/kaggle/working").exists()
-MAKE_SUB: bool = False
+MAKE_SUB: bool = True
 SKIP_TRAIN = False
 
 logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}")
@@ -107,7 +107,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp003_Unet++_se_resnext50_32x4d_gradual_warmup_rerun"
+    exp_name = "exp013_Unet++_se_resnext50_32x4d_gradual_warmup_mixup_cutout"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -128,6 +128,8 @@ class CFG:
     max_lr = 1e-5
     max_grad_norm = 1000.0
     loss = "BCEWithLogitsLoss"
+    # ================= Data cfg =====================
+    mixup = True
 
     # ================= Test cfg =====================
     use_tta = True
@@ -217,6 +219,35 @@ def concat_tile(image_list_2d: list[np.ndarray]) -> np.ndarray:
 # ===============================================================
 # Data
 # ===============================================================
+def mixup(
+    images: torch.Tensor, labels: torch.Tensor, alpha: float = 0.2
+) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
+    """
+    Args:
+        images: (N, C, H, W)
+        labels: (N, H, W)
+        alpha: beta分布のパラメータ
+
+    Returns:
+        mixed_image: (N, C, H, W)
+        mixed_labels: (N, H, W), mask
+        lambd: 重み
+        rand_idx: 乱数のインデックス
+    """
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"Invalid alpha: {alpha}")
+
+    lam = np.random.beta(alpha, alpha)
+    batch_size = images.shape[0]
+    rand_idx = torch.randperm(batch_size)
+
+    # (N, C, H, W)
+    mixed_image = lam * images + (1 - lam) * images[rand_idx, ...]
+    # (N, 1, H, W)
+    mixed_labels = lam * labels + (1 - lam) * labels[rand_idx, ...]
+    return mixed_image, mixed_labels, lam, rand_idx
+
+
 def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     image1 = np.stack([cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
 
@@ -443,6 +474,7 @@ class VCDataset(Dataset):
             (image, mask)
         """
         image = self.images[idx]
+        # phase == "test"
         if self.labels is None:
             if self.transform_fn is not None:
                 augmented = self.transform_fn(image=image)
@@ -456,6 +488,7 @@ class VCDataset(Dataset):
                 augmented = self.transform_fn(image=image, mask=mask)
                 image = augmented["image"]
                 mask = augmented["mask"]
+
             return image, mask
 
 
@@ -816,6 +849,9 @@ def train_per_epoch(
         for i, (image, target) in pbar:
             model.train()
 
+            if cfg.mixup:
+                image, target, _, _ = mixup(image, target)
+
             image = image.to(cfg.device)
             target = target.to(cfg.device)
             batch_size = target.size(0)
@@ -939,7 +975,9 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
         scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
-        scheduler = GradualWarmupSchedulerV2(optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine)
+        scheduler = GradualWarmupSchedulerV2(
+            optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine
+        )
         return scheduler
 
     raise ValueError(f"Invalid scheduler: {cfg.scheduler}")

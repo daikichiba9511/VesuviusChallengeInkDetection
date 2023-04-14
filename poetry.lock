@@ -1926,6 +1926,52 @@ files = [
 ]
 
 [[package]]
+name = "monai"
+version = "1.1.0"
+description = "AI Toolkit for Healthcare Imaging"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "monai-1.1.0-202212191849-py3-none-any.whl", hash = "sha256:28b47fc552309f1974a347fca6771969f25e98c228ef3a53a62eae250f3c0b8d"},
+]
+
+[package.dependencies]
+numpy = ">=1.17"
+torch = ">=1.8"
+
+[package.extras]
+all = ["cucim (>=22.8.1)", "einops", "fire", "gdown (>=4.4.0)", "h5py", "imagecodecs", "itk (>=5.2)", "jsonschema", "lmdb", "matplotlib", "mlflow", "nibabel", "ninja", "nni", "openslide-python (==1.1.2)", "optuna", "pandas", "pillow", "psutil", "pydicom", "pynrrd", "pytorch-ignite (==0.4.10)", "pyyaml", "scikit-image (>=0.14.2)", "tensorboard", "tensorboardX", "tifffile", "torchvision", "tqdm (>=4.47.0)", "transformers (<4.22)"]
+cucim = ["cucim (>=22.8.1)"]
+einops = ["einops"]
+fire = ["fire"]
+gdown = ["gdown (>=4.4.0)"]
+h5py = ["h5py"]
+ignite = ["pytorch-ignite (==0.4.10)"]
+imagecodecs = ["imagecodecs"]
+itk = ["itk (>=5.2)"]
+jsonschema = ["jsonschema"]
+lmdb = ["lmdb"]
+matplotlib = ["matplotlib"]
+mlflow = ["mlflow"]
+nibabel = ["nibabel"]
+ninja = ["ninja"]
+openslide = ["openslide-python (==1.1.2)"]
+pandas = ["pandas"]
+pillow = ["pillow (!=8.3.0)"]
+psutil = ["psutil"]
+pydicom = ["pydicom"]
+pynrrd = ["pynrrd"]
+pyyaml = ["pyyaml"]
+skimage = ["scikit-image (>=0.14.2)"]
+tensorboard = ["tensorboard"]
+tensorboardx = ["tensorboardX"]
+tifffile = ["tifffile"]
+torchvision = ["torchvision"]
+tqdm = ["tqdm (>=4.47.0)"]
+transformers = ["transformers (<4.22)"]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 description = "Python library for arbitrary-precision floating-point arithmetic"
@@ -4407,4 +4453,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "b8c84f158bb4e3b3a8671ec9c4544d35ed9e4a611b1e252db3684e9975b1027f"
+content-hash = "0f0b7e51f68e3cdcb2e1926799b32229e09b971a5f30d541c9a236244ec3f7e2"
