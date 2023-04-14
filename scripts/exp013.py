@@ -417,6 +417,7 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                     fill_value=0,
                     p=0.5,
                 ),
+                A.Cutout(),
                 A.Normalize(mean=[0] * cfg.in_chans, std=[1] * cfg.in_chans),
                 ToTensorV2(transpose_mask=True),
             ]
