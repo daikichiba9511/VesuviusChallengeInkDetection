@@ -1,11 +1,11 @@
-"""exp013
+"""exp014
 
-- copy from exp010
+- copy from exp003
 - 2.5D segmentation
 
 DIFF:
 
-- cutout
+- mixup
 
 Reference:
 [1]
@@ -107,7 +107,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp013_Unet++_se_resnext101_32x4d_gradual_warmup_mixup_cutout_epoch20"
+    exp_name = "exp014_fold5_Unet++_se_resnext50_32x4d_gradual_warmup_mixup"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -115,8 +115,8 @@ class CFG:
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
-    n_fold = 3
-    epoch = 10 * 2
+    n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
+    epoch = 10
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 10
@@ -136,7 +136,7 @@ class CFG:
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
-    encoder_name: str = "se_resnext101_32x4d"
+    encoder_name: str = "se_resnext50_32x4d"
     in_chans: int = 6
 
 
@@ -324,11 +324,14 @@ def get_train_valid_split(
 
     Args:
         cfg: 設定
-        valid_id: 検証データのID
+        valid_id: 検証データのID, {1: 1, 2: 2_1, 3: 2_2, 4: 2_3, 5: 3}
 
     Returns:
         (train_images, train_masks, valid_images, valid_masks, valid_xyxys)
     """
+    if not (1 <= valid_id <= 5):
+        raise ValueError(f"Invalid valid_id: {valid_id}")
+
     train_images = []
     train_masks = []
 
@@ -344,18 +347,43 @@ def get_train_valid_split(
 
         x1_list = list(range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride))
         y1_list = list(range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride))
+        fragment_id_2_split_range = np.arange(0, mask.shape[0], mask.shape[0] // 3)
+        # fragment_id_2_split_range = [0, 5002, 10004, 15006]
+        # valid_id = 2 -> 0 ~ 5002
+        # valid_id = 3 -> 5002 ~ 10004
+        # valid_id = 4 -> 10004 ~ 15006
+
         for y1 in y1_list:
             for x1 in x1_list:
                 y2 = y1 + cfg.tile_size
                 x2 = x1 + cfg.tile_size
-
-                if fragment_id == valid_id:
+                # y1の値で三等分するよりも、y2の値で三等分した方が、境界付近のリーク減りそう
+                if (
+                    (fragment_id == 1 and valid_id == 1)  # fold1
+                    or (
+                        fragment_id == 2
+                        and valid_id == 2
+                        and fragment_id_2_split_range[0] <= y2 < fragment_id_2_split_range[1]
+                    )  # fold2
+                    or (
+                        fragment_id == 2
+                        and valid_id == 3
+                        and fragment_id_2_split_range[1] <= y2 < fragment_id_2_split_range[2]
+                    )  # fold3
+                    or (
+                        fragment_id == 2
+                        and valid_id == 4
+                        and fragment_id_2_split_range[2] <= y2 < fragment_id_2_split_range[3]
+                    )  # fold4
+                    or (fragment_id == 3 and valid_id == 5)  # fold5
+                ):
                     valid_images.append(image[y1:y2, x1:x2])
                     valid_masks.append(mask[y1:y2, x1:x2, None])
                     valid_xyxys.append([x1, y1, x2, y2])
                 else:
                     train_images.append(image[y1:y2, x1:x2])
                     train_masks.append(mask[y1:y2, x1:x2, None])
+
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
 
 
@@ -417,7 +445,6 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                     fill_value=0,
                     p=0.5,
                 ),
-                A.Cutout(),
                 A.Normalize(mean=[0] * cfg.in_chans, std=[1] * cfg.in_chans),
                 ToTensorV2(transpose_mask=True),
             ]
@@ -788,12 +815,12 @@ def calc_cv(mask_gt, mask_pred):
     return best_dice, best_th
 
 
-def plot_dataset(cfg: CFG, train_images: np.ndarray, train_labels: np.ndarray) -> None:
+def plot_dataset(cfg: CFG, train_images: list[np.ndarray], train_labels: list[np.ndarray]) -> None:
     """Plot dataset
 
     Args:
         train_images (np.ndarray): (N, H, W, C)
-        train_labels (np.ndarray): (N, H, W, C)
+        train_labels (np.ndarray): (N, H, W)
     """
     transform = A.Compose(
         [
@@ -853,8 +880,8 @@ def train_per_epoch(
             if cfg.mixup:
                 image, target, _, _ = mixup(image, target)
 
-            image = image.to(cfg.device)
-            target = target.to(cfg.device)
+            image = image.to(cfg.device, non_blocking=True)
+            target = target.to(cfg.device, non_blocking=True)
             batch_size = target.size(0)
 
             with torch.cuda.amp.autocast(enabled=cfg.use_amp):
@@ -1032,6 +1059,7 @@ def get_train_valid_loader(
     return train_loader, valid_loader
 
 
+# training_fn
 def train(cfg: CFG) -> None:
     for fold in range(1, cfg.n_fold + 1):
         seed_everything(seed=cfg.random_state)
@@ -1045,7 +1073,13 @@ def train(cfg: CFG) -> None:
         ) = get_train_valid_split(cfg=cfg, valid_id=fold)
         valid_xyxys = np.array(valid_xyxys)
 
-        valid_mask_gt = cv2.imread(str(DATA_DIR / f"train/{fold}/inklabels.png"), 0)
+        logger.info(f"train_images.shape: {len(train_images)}")
+        logger.info(f"train_labels.shape: {len(train_labels)}")
+        logger.info(f"valid_images.shape: {len(valid_images)}")
+        logger.info(f"valid_labels.shape: {len(valid_labels)}")
+
+        fragment_id = {1: 1, 2: 2, 3: 2, 4: 2, 5: 3}[fold]
+        valid_mask_gt = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/inklabels.png"), 0)
         valid_mask_gt = valid_mask_gt / 255
         pad0 = cfg.tile_size - valid_mask_gt.shape[0] % cfg.tile_size
         pad1 = cfg.tile_size - valid_mask_gt.shape[1] % cfg.tile_size
@@ -1145,11 +1179,13 @@ def train(cfg: CFG) -> None:
         axes[2].set_title("Pred with threshold")
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
 
-    mean_dice = np.mean(
-        [torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"] for fold in range(1, cfg.n_fold + 1)]
-    )
+    best_dices = [
+        torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"] for fold in range(1, cfg.n_fold + 1)
+    ]
+    logger.info(f"best dices: {best_dices}")
+    mean_dice = np.mean(best_dices)
     logger.info("OOF mean dice: {}".format(mean_dice))
-    wandb.log({"OOF mean dice": mean_dice})
+    wandb.log({"OOF mean dice": mean_dice, "best dices": best_dices})
 
     torch.cuda.empty_cache()
     gc.collect()
