@@ -1,11 +1,13 @@
-"""exp014
+"""exp019
 
-- copy from exp003
+- copy from exp018
 - 2.5D segmentation
+- tta
 
 DIFF:
 
-- mixup
+- contrast augmentation
+
 
 Reference:
 [1]
@@ -41,6 +43,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
+import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from sklearn.metrics import fbeta_score, roc_auc_score
@@ -107,7 +110,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp014_fold5_Unet++_se_resnext50_32x4d_gradual_warmup_mixup"
+    exp_name = "exp018_fold5_Unet++_se_resnext50_32x4d_mixup_tta_hvr"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -133,6 +136,8 @@ class CFG:
 
     # ================= Test cfg =====================
     use_tta = True
+    # tta_transforms = tta.aliases.d4_transform()
+    tta_transforms = tta.Compose([tta.HorizontalFlip(), tta.VerticalFlip(), tta.Rotate90(angles=[0, 90, 180, 270])])
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
@@ -279,6 +284,8 @@ def get_mask_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return image1_mask, image2_mask, image3_mask
 
 
+# q: この関数は何をしてますか　
+# a: 画像を読み込んで、画像の中心を切り取って、画像のサイズをtile_sizeに合わせる
 def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]:
     """画像とマスクを読み込む
 
@@ -428,6 +435,7 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.75),
+                # A.RandomContrast(limit=0.2, p=0.75),
                 A.ShiftScaleRotate(p=0.75),
                 A.OneOf(
                     [
@@ -561,12 +569,16 @@ def build_model(cfg: CFG) -> VCNet:
 
 
 class EnsembleModel:
-    def __init__(self, use_tta: bool = False) -> None:
+    def __init__(self, cfg: CFG, use_tta: bool = False) -> None:
         self.use_tta = use_tta
         self.models: list[VCNet] = []
+        self.cfg = cfg
 
     def add_model(self, model: VCNet) -> None:
-        self.models.append(model)
+        if self.use_tta:
+            self.models.append(tta.SegmentationTTAWrapper(model, self.cfg.tta_transforms, merge_mode="mean"))
+        else:
+            self.models.append(model)
 
     def __call__(self, x: torch.Tensor) -> np.ndarray:
         outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
@@ -575,7 +587,7 @@ class EnsembleModel:
 
 
 def build_ensemble_model(cfg: CFG) -> EnsembleModel:
-    ensemble_model = EnsembleModel(use_tta=cfg.use_tta)
+    ensemble_model = EnsembleModel(cfg=cfg, use_tta=cfg.use_tta)
     model_dir = CP_DIR / cfg.exp_name if IS_TRAIN else CP_DIR
     for fold in range(1, cfg.n_fold + 1):
         _model = build_model(cfg)
@@ -1021,6 +1033,8 @@ def valid_per_epoch(
     model.eval()
     valid_losses = AverageMeter(name="valid_loss")
 
+    tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms , merge_mode="mean")
+
     for step, (image, target) in tqdm(
         enumerate(valid_loader),
         total=len(valid_loader),
@@ -1033,7 +1047,7 @@ def valid_per_epoch(
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
+            y_preds = tta_model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)

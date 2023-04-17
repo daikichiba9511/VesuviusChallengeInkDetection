@@ -5,7 +5,7 @@
 
 DIFF:
 
-- mixup
+- advprop
 
 Reference:
 [1]
@@ -107,7 +107,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp014_fold5_Unet++_se_resnext50_32x4d_gradual_warmup_mixup"
+    exp_name = "exp016_fold5_Unet++_tf_eff_v2_l_in22k_advprop_gradual_warmup_mixup"
     random_state = 42
     image_size = (224, 224)
     tile_size: int = 224
@@ -136,8 +136,11 @@ class CFG:
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
-    encoder_name: str = "se_resnext50_32x4d"
+    # encoder_name: str = "timm-efficientnet-b7"
+    encoder_name: str = "tu-tf_efficientnetv2_l_in21ft1k"
     in_chans: int = 6
+    # weights = "advprop"
+    weights = "imagenet"
 
 
 # ===============================================================
@@ -856,106 +859,7 @@ def plot_dataset(cfg: CFG, train_images: list[np.ndarray], train_labels: list[np
         if plot_count >= 10:
             break
 
-class AWP:
-    """ Adversarial Weight Perturbation
 
-    Args:
-        model (torch.nn.Module): model
-        optimizer (torch.optim.Optimizer): optimizer
-        criterion (Callable): loss function
-        adv_param (str): parameter name to be perturbed. Defaults to "weight".
-        adv_lr (float): learning rate. Defaults to 0.2.
-        adv_eps (int): epsilon. Defaults to 1.
-        start_epoch (int): start epoch. Defaults to 0.
-        adv_step (int): adversarial step. Defaults to 1.
-        scaler (torch.cuda.amp.GradScaler): scaler. Defaults to None.
-
-    Examples:
-    >>> model = Model()
-    >>> optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    >>> batch_size = 16
-    >>> epochs = 10
-    >>> num_train_train_steps = int(len(train_images) / batch_size * epochs)
-    >>> awp = AWP(
-    ...    model=model,
-    ...    optimizer=optimizer,
-    ...    adv_lr=1e-5,
-    ...    adv_eps=3,
-    ...    start_epoch=num_train_steps // epochs,
-    ...    scaler=None,
-    ... )
-    >>> awp.attack_backward(image, mask_label, epoch)
-
-    References:
-    1.
-    https://proceedings.neurips.cc/paper/2020/file/1ef91c212e30e14bf125e9374262401f-Paper.pdf
-    2.
-    https://speakerdeck.com/masakiaota/kaggledeshi-yong-sarerudi-dui-xue-xi-fang-fa-awpnolun-wen-jie-shuo-toshi-zhuang-jie-shuo-adversarial-weight-perturbation-helps-robust-generalization
-    """
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        optimizer,
-        criterion: Callable,
-        adv_param: str = "weight",
-        adv_lr: float = 0.2,
-        adv_eps: int = 1,
-        start_epoch: int = 0,
-        adv_step: int = 1,
-        scaler=None,
-    ) -> None:
-        self.model = model
-        self.optimizer = optimizer
-        self.adv_param = adv_param
-        self.adv_lr = adv_lr
-        self.adv_eps = adv_eps
-        self.start_epoch = start_epoch
-        self.adv_step = adv_step
-        self.backup = {}
-        self.backup_eps = {}
-        self.scaler = scaler
-        self.criterion = criterion
-
-    def attack_backward(self, x: torch.Tensor, y: torch.Tensor, epoch: int) -> None:
-        if (self.adv_lr == 0) or (epoch < self.start_epoch):
-            return None
-        self._save()
-        for i in range(self.adv_step):
-            self._attack_step()
-            with torch.cuda.amp.autocast():
-                logits = self.model(x)
-                adv_loss = self.criterion(logits, y)
-                adv_loss = adv_loss.mean()
-            self.optimizer.zero_grad()
-            if self.scaler is not None:
-                self.scaler.scale(adv_loss).backward()
-            else:
-                adv_loss.backward()
-
-        self._restore()
-
-    def _attack_step(self) -> None:
-        e = 1e-6
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
-                norm1 = torch.norm(param.grad)
-                norm2 = torch.norm(param.data.detach())
-                if norm1 != 0 and not torch.isnan(norm1):
-                    r_at = self.adv_lr * param.grad / (norm1 + e) * (norm2 + e)
-                    param.data.add_(r_at)
-                    param.data = torch.min(torch.max(param.data, self.backup_eps[name][0]), self.backup_eps[name][1])
-                # param.data.clamp_(*self.backup_eps[name])
-
-    def _save(self) -> None:
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
-                if name not in self.backup:
-                    self.backup[name] = param.data.clone()
-                    grad_eps = self.adv_eps * param.abs().detach()
-                    self.backup_eps[name] = (
-                        self.backup[name] - grad_eps,
-                        self.backup[name] + grad_eps,
-                    )
 # ==========================================================
 # training function
 # ==========================================================
@@ -1189,6 +1093,7 @@ def train(cfg: CFG) -> None:
             arch=cfg.arch,
             encoder_name=cfg.encoder_name,
             in_chans=cfg.in_chans,
+            weights=cfg.weights,
         )
         net = net.to(device=cfg.device)
 
@@ -1571,6 +1476,7 @@ def main() -> None:
             config=asdict(cfg),
             group=f"{cfg.arch}_{cfg.encoder_name}",
             name=f"{cfg.exp_name}_{start_time}",
+            reinit=True,
         )
         train(cfg=cfg)
         # valid(cfg=cfg)
