@@ -16,12 +16,10 @@ https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
 from __future__ import annotations
 
 import gc
-import math
 import multiprocessing as mp
 import os
 import pickle
 import random
-import ssl
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -34,16 +32,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import segmentation_models_pytorch as smp
-import timm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 import torchvision.transforms as transforms
-import torchvision.transforms.functional as F
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
-from sklearn.metrics import fbeta_score, roc_auc_score
+from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
@@ -61,7 +56,9 @@ IS_TRAIN = not Path("/kaggle/working").exists()
 MAKE_SUB: bool = False
 SKIP_TRAIN = False
 
-logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}")
+logger.info(
+    f"Meta Config: IS_TRAIN={IS_TRAIN}, MAKE_SUB={MAKE_SUB}, SKIP_TRAIN={SKIP_TRAIN}"
+)
 
 
 if IS_TRAIN:
@@ -204,7 +201,10 @@ def make_tile_array(
         image_size: (H, W)
     """
     stack_pred = np.vstack(valid_preds).reshape(-1, image_size[0], image_size[1])
-    tile_array = [stack_pred[h_i * w_count : (h_i + 1) * w_count].astype(np.float32) for h_i in range(h_count)]
+    tile_array = [
+        stack_pred[h_i * w_count : (h_i + 1) * w_count].astype(np.float32)
+        for h_i in range(h_count)
+    ]
     return tile_array
 
 
@@ -287,11 +287,26 @@ def preprocess_img(cfg: CFG, image: np.ndarray) -> np.ndarray:
 
 
 def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    image1 = np.stack([cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
+    image1 = np.stack(
+        [
+            cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0)
+            for i in tqdm(range(65))
+        ]
+    )
 
-    image2 = np.stack([cv2.imread(str(DATA_DIR / f"train/2/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
+    image2 = np.stack(
+        [
+            cv2.imread(str(DATA_DIR / f"train/2/surface_volume/{i:02}.tif"), 0)
+            for i in tqdm(range(65))
+        ]
+    )
 
-    image3 = np.stack([cv2.imread(str(DATA_DIR / f"train/3/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
+    image3 = np.stack(
+        [
+            cv2.imread(str(DATA_DIR / f"train/3/surface_volume/{i:02}.tif"), 0)
+            for i in tqdm(range(65))
+        ]
+    )
     return image1, image2, image3
 
 
@@ -334,7 +349,9 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     end = mid + cfg.in_chans // 2
     idxs = range(start, end)
     for i in idxs:
-        image = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0)
+        image = cv2.imread(
+            str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0
+        )
 
         assert image.ndim == 2
 
@@ -359,7 +376,13 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
 def get_train_valid_split(
     cfg: CFG, valid_id: int
-) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray], list[list[int]],]:
+) -> tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[list[int]],
+]:
     """訓練データと検証データを分割する
 
     Args:
@@ -380,7 +403,9 @@ def get_train_valid_split(
         # image: (h, w, in_chans)
         # mask: (h, w)
         image, mask = read_image_mask(cfg=cfg, fragment_id=fragment_id)
-        dbg(f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}")
+        dbg(
+            f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}"
+        )
 
         x1_list = list(range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride))
         y1_list = list(range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride))
@@ -631,19 +656,27 @@ class EarlyStopping:
 
         if score < self.best_score + self.delta:
             self.counter += 1
-            self.logger_fn(f"EarlyStopping Counter: {self.counter} out of {self.patience}")
+            self.logger_fn(
+                f"EarlyStopping Counter: {self.counter} out of {self.patience}"
+            )
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            self.logger_fn(f"Detected Increasing Score: best score {self.best_score} --> {score}")
+            self.logger_fn(
+                f"Detected Increasing Score: best score {self.best_score} --> {score}"
+            )
             self.best_score = score
             self.save_checkpoint(val_loss=val_loss, model=model)
             self.counter = 0
 
-    def save_checkpoint(self, val_loss: float, model: nn.Module, prefix: str = "") -> None:
+    def save_checkpoint(
+        self, val_loss: float, model: nn.Module, prefix: str = ""
+    ) -> None:
         """Save model when validation loss decrease."""
         if self.verbose:
-            self.logger_fn(f"Validation loss decreased ({self.val_loss_min} --> {val_loss})")
+            self.logger_fn(
+                f"Validation loss decreased ({self.val_loss_min} --> {val_loss})"
+            )
 
         state_dict = model.state_dict()
         save_prefix = prefix if prefix != "" else self.save_prefix
@@ -743,7 +776,12 @@ def dice_coef_torch(
     beta_square = beta**2
     c_precision = ctp / (ctp + cfp + smooth)
     c_recall = ctp / (y_true_count + smooth)
-    dice = (1 + beta_square) * c_precision * c_recall / (beta_square * c_precision + c_recall + smooth)
+    dice = (
+        (1 + beta_square)
+        * c_precision
+        * c_recall
+        / (beta_square * c_precision + c_recall + smooth)
+    )
     return dice
 
 
@@ -762,7 +800,9 @@ def calc_dice(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     return dice
 
 
-def fbeta_numpy(targets: np.ndarray, preds: np.ndarray, beta: float = 0.5, smooth: float = 1e-5) -> np.float32:
+def fbeta_numpy(
+    targets: np.ndarray, preds: np.ndarray, beta: float = 0.5, smooth: float = 1e-5
+) -> np.float32:
     """Compute fbeta score
     https://www.kaggle.com/competitions/vesuvius-challenge-ink-detection/discussion/397288
 
@@ -782,7 +822,12 @@ def fbeta_numpy(targets: np.ndarray, preds: np.ndarray, beta: float = 0.5, smoot
 
     c_precision = ctp / (ctp + cfp + smooth)
     c_recall = ctp / (y_true_count + smooth)
-    fbeta = (1 + beta_square) * c_precision * c_recall / (beta_square * c_precision + c_recall + smooth)
+    fbeta = (
+        (1 + beta_square)
+        * c_precision
+        * c_recall
+        / (beta_square * c_precision + c_recall + smooth)
+    )
     return fbeta
 
 
@@ -910,7 +955,9 @@ def train_per_epoch(
             pbar.set_postfix({"epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
             learning_rate = optimizer.param_groups[0]["lr"]
 
-            wandb.log({f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate})
+            wandb.log(
+                {f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate}
+            )
     return running_loss.avg
 
 
@@ -971,21 +1018,29 @@ class GradualWarmupSchedulerV2(GradualWarmupScheduler):
     """
 
     def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
-        super(GradualWarmupSchedulerV2, self).__init__(optimizer, multiplier, total_epoch, after_scheduler)
+        super(GradualWarmupSchedulerV2, self).__init__(
+            optimizer, multiplier, total_epoch, after_scheduler
+        )
 
     def get_lr(self):
         if self.last_epoch > self.total_epoch:
             if self.after_scheduler:
                 if not self.finished:
-                    self.after_scheduler.base_lrs = [base_lr * self.multiplier for base_lr in self.base_lrs]
+                    self.after_scheduler.base_lrs = [
+                        base_lr * self.multiplier for base_lr in self.base_lrs
+                    ]
                     self.finished = True
                 return self.after_scheduler.get_lr()
             return [base_lr * self.multiplier for base_lr in self.base_lrs]
         if self.multiplier == 1.0:
-            return [base_lr * (float(self.last_epoch) / self.total_epoch) for base_lr in self.base_lrs]
+            return [
+                base_lr * (float(self.last_epoch) / self.total_epoch)
+                for base_lr in self.base_lrs
+            ]
         else:
             return [
-                base_lr * ((self.multiplier - 1.0) * self.last_epoch / self.total_epoch + 1.0)
+                base_lr
+                * ((self.multiplier - 1.0) * self.last_epoch / self.total_epoch + 1.0)
                 for base_lr in self.base_lrs
             ]
 
@@ -994,7 +1049,9 @@ def get_scheduler(
     cfg: CFG, optimizer: nn.optim.Optimizer, step_per_epoch: int | None = None
 ) -> nn.optim.lr_scheduler._LRScheduler:
     if cfg.scheduler == "CosineAnnealingLR":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epoch, eta_min=1e-6)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg.epoch, eta_min=1e-6
+        )
         return scheduler
     if cfg.scheduler == "OneCycleLR":
         if step_per_epoch is None:
@@ -1011,9 +1068,14 @@ def get_scheduler(
         )
         return scheduler
     if cfg.scheduler == "GradualWarmupScheduler":
-        scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7)
+        scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer=optimizer, T_max=cfg.epoch, eta_min=1e-7
+        )
         scheduler = GradualWarmupSchedulerV2(
-            optimizer=optimizer, multiplier=10, total_epoch=1, after_scheduler=scheduler_cosine
+            optimizer=optimizer,
+            multiplier=10,
+            total_epoch=1,
+            after_scheduler=scheduler_cosine,
         )
         return scheduler
 
@@ -1088,7 +1150,11 @@ def train(cfg: CFG) -> None:
         valid_mask_gt = np.pad(valid_mask_gt, ((0, pad0), (0, pad1)), constant_values=0)
 
         net = VCNet(
-            num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name, in_chans=cfg.in_chans, weights=cfg.weights
+            num_classes=1,
+            arch=cfg.arch,
+            encoder_name=cfg.encoder_name,
+            in_chans=cfg.in_chans,
+            weights=cfg.weights,
         )
         net = net.to(device=cfg.device)
 
@@ -1109,7 +1175,9 @@ def train(cfg: CFG) -> None:
 
         criterion = get_loss(cfg=cfg)
         optimizer = get_optimizer(cfg=cfg, model=net)
-        scheduler = get_scheduler(cfg=cfg, optimizer=optimizer, step_per_epoch=len(train_loader))
+        scheduler = get_scheduler(
+            cfg=cfg, optimizer=optimizer, step_per_epoch=len(train_loader)
+        )
         scaler = torch.cuda.amp.grad_scaler.GradScaler(enabled=cfg.use_amp)
 
         best_score = 0
@@ -1179,7 +1247,10 @@ def train(cfg: CFG) -> None:
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
 
     mean_dice = np.mean(
-        [torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"] for fold in range(1, cfg.n_fold + 1)]
+        [
+            torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"]
+            for fold in range(1, cfg.n_fold + 1)
+        ]
     )
     logger.info("OOF mean dice: {}".format(mean_dice))
     wandb.log({"OOF mean dice": mean_dice})
@@ -1210,9 +1281,15 @@ def valid(cfg: CFG) -> None:
         valid_xyxys = np.stack(valid_xyxys, axis=0)
 
         net = VCNet(
-            num_classes=1, arch=cfg.arch, encoder_name=cfg.encoder_name, in_chans=cfg.in_chans, weights=cfg.weights
+            num_classes=1,
+            arch=cfg.arch,
+            encoder_name=cfg.encoder_name,
+            in_chans=cfg.in_chans,
+            weights=cfg.weights,
         )
-        net.load_state_dict(torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth"))
+        net.load_state_dict(
+            torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth")
+        )
         net = net.to(cfg.device)
 
         valid_dataset = VCDataset(
@@ -1243,7 +1320,9 @@ def valid(cfg: CFG) -> None:
         mask_count = np.zeros(valid_mask_gt.shape)
         valid_preds = []
         valid_targets = []
-        for step, (image, target) in tqdm(enumerate(valid_loader), total=len(valid_loader), dynamic_ncols=True):
+        for step, (image, target) in tqdm(
+            enumerate(valid_loader), total=len(valid_loader), dynamic_ncols=True
+        ):
             net.eval()
             image = image.to(cfg.device)
             target = target.to(cfg.device)
@@ -1288,7 +1367,9 @@ def read_image(cfg: CFG, fragment_id: str) -> np.ndarray:
     idxs = range(start, end)
 
     for i in tqdm(idxs):
-        image = cv2.imread(str(DATA_DIR / f"test/{fragment_id}/surface_volume/{i:02}.tif"), 0)
+        image = cv2.imread(
+            str(DATA_DIR / f"test/{fragment_id}/surface_volume/{i:02}.tif"), 0
+        )
 
         pad0 = cfg.tile_size - image.shape[0] % cfg.tile_size
         pad1 = cfg.tile_size - image.shape[1] % cfg.tile_size
@@ -1353,11 +1434,15 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     fragment_ids = list(DATA_DIR.rglob("test/*"))
     model = build_ensemble_model(cfg=cfg)
     for fragment_id, fragment_path in enumerate(fragment_ids, start=1):
-        test_loader, xyxy_list = make_test_datast(cfg=cfg, fragment_id=fragment_path.stem)
+        test_loader, xyxy_list = make_test_datast(
+            cfg=cfg, fragment_id=fragment_path.stem
+        )
         dbg(f"xyxy_list.shape: {xyxy_list.shape}")
         dbg(f"xyxy_list.min: {xyxy_list.min()}, xyxy_list.max: {xyxy_list.max()}")
 
-        binary_mask = cv2.imread(str(DATA_DIR / f"test/{fragment_path.stem}/mask.png"), 0)
+        binary_mask = cv2.imread(
+            str(DATA_DIR / f"test/{fragment_path.stem}/mask.png"), 0
+        )
         binary_mask = (binary_mask / 255).astype(np.int8)
 
         ori_h = binary_mask.shape[0]
@@ -1418,12 +1503,16 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
 
         if IS_TRAIN:
             plt.imsave(
-                OUTPUT_DIR / cfg.exp_name / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png",
+                OUTPUT_DIR
+                / cfg.exp_name
+                / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png",
                 pred_tile_image,
             )
             plt.close("all")
             plt.imsave(
-                OUTPUT_DIR / cfg.exp_name / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png",
+                OUTPUT_DIR
+                / cfg.exp_name
+                / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png",
                 np.where(pred_tile_image > threshold, 1, 0),
             )
             plt.close("all")
@@ -1441,7 +1530,9 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
         # inklabels_rle = " ".join(map(str, sum(tqdm(zip(starts_idx, lengths)), ())))
         inklabels_rle = fast_rle(img=pred_tile_image)
         if IS_TRAIN:
-            logger.info(f"ID: {str(fp).split('/')[-1]}, inklabels_rle: {inklabels_rle[:10]}")
+            logger.info(
+                f"ID: {str(fp).split('/')[-1]}, inklabels_rle: {inklabels_rle[:10]}"
+            )
         preds.append({"Id": str(fp).split("/")[-1], "Predicted": inklabels_rle})
         del pred_tile_image, inklabels_rle
         gc.collect()
@@ -1476,7 +1567,11 @@ def main() -> None:
     if MAKE_SUB:
         preds = test(cfg, threshold=THR)
         print(preds)
-        save_path = "submission.csv" if not IS_TRAIN else OUTPUT_DIR / cfg.exp_name / "submission.csv"
+        save_path = (
+            "submission.csv"
+            if not IS_TRAIN
+            else OUTPUT_DIR / cfg.exp_name / "submission.csv"
+        )
         preds.to_csv(save_path, index=False)
         if SKIP_TRAIN:
             test_duration = datetime.now() - start_time

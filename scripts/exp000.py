@@ -14,9 +14,7 @@ import multiprocessing as mp
 import os
 import pickle
 import random
-import shutil
 import warnings
-from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -25,7 +23,6 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import timm
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -33,7 +30,7 @@ import torchvision
 import torchvision.transforms.v2 as transforms
 import torchvision.transforms.v2.functional as F
 from loguru import logger
-from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 

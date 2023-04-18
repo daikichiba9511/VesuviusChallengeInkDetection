@@ -25,11 +25,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import segmentation_models_pytorch as smp
-import timm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
 from loguru import logger

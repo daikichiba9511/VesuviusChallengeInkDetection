@@ -11,12 +11,10 @@ https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
 from __future__ import annotations
 
 import gc
-import math
 import multiprocessing as mp
 import os
 import pickle
 import random
-import ssl
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -29,16 +27,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import segmentation_models_pytorch as smp
-import timm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 import torchvision.transforms as transforms
-import torchvision.transforms.functional as F
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
-from sklearn.metrics import fbeta_score, roc_auc_score
+from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
@@ -1502,6 +1497,7 @@ def main() -> None:
 
     total_duration = datetime.now() - start_time
     logger.info(f"Total Duration = {total_duration}")
+
 
 if __name__ == "__main__":
     main()

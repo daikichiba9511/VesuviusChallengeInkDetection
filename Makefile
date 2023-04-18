@@ -13,17 +13,17 @@ setup: ## setup poetry and install packages
 	poetry install --no-interaction
 
 lint: ## lint code
-	poetry run pflake8 scirpts src
-	poetry run isort -c --diff scirpts src
-	poetry run black --check scirpts src
+	poetry run pflake8 scripts src
+	poetry run isort -c --diff scripts src
+	poetry run black --check scripts src
 
 mypy: ## typing check
 	poetry run mypy --config-file pyproject.toml scirpts src
 
 format: ## auto format
-	poetry run autoflake --in-place --remove-all-unused-imports --remove-unused-variables --recursive scirpts src
-	poetry run isort scirpts src
-	poetry run black scirpts src
+	poetry run autoflake --in-place --remove-all-unused-imports --remove-unused-variables --recursive scripts src
+	poetry run isort scripts src
+	poetry run black scripts src
 
 test: ## run test with pytest
 	poetry run pytest -c tests
