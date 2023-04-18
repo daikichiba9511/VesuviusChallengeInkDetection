@@ -1,14 +1,11 @@
-"""exp019
+"""exp014
 
-- copy from exp018
+- copy from exp0014
 - 2.5D segmentation
-- tta
 
 DIFF:
 
-- contrast augmentation
-- HistEq augmentation(CLAHE)
-
+- cutmix
 
 Reference:
 [1]
@@ -29,7 +26,7 @@ import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Container
 
 import albumentations as A
 import cv2
@@ -44,7 +41,6 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
-import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from sklearn.metrics import fbeta_score, roc_auc_score
@@ -111,16 +107,16 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp019_fold5_Unet++_se_resnext50_32x4d_mixup_tta_hvr_in_chans12"
+    exp_name = "exp014_fold5_Unet++_se_resnext50_32x4d_gradual_warmup_mixup"
     random_state = 42
+    image_size = (224, 224)
     tile_size: int = 224
-    image_size = (tile_size, tile_size)
     stride: int = tile_size // 2
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 15
+    epoch = 10
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 10
@@ -132,54 +128,18 @@ class CFG:
     max_lr = 1e-5
     max_grad_norm = 1000.0
     loss = "BCEWithLogitsLoss"
-    # ================= Model =====================
-    arch: str = "UnetPlusPlus"
-    encoder_name: str = "se_resnext50_32x4d"
-    in_chans: int = 6 * 2
-
     # ================= Data cfg =====================
-    mixup = True
-
-    train_compose = [
-        A.Resize(image_size[0], image_size[1]),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.75),
-        A.RandomContrast(limit=0.2, p=0.75),
-        # A.CLAHE(p=0.75),
-        A.ShiftScaleRotate(p=0.75),
-        A.OneOf(
-            [
-                A.GaussNoise(var_limit=[10, 50]),
-                A.GaussianBlur(),
-                A.MotionBlur(),
-            ],
-            p=0.4,
-        ),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-        A.CoarseDropout(
-            max_holes=1,
-            max_width=int(image_size[1] * 0.3),
-            max_height=int(image_size[0] * 0.3),
-            fill_value=0,
-            p=0.5,
-        ),
-        A.Cutout(p=0.5),
-        A.Normalize(mean=[0] * in_chans, std=[1] * in_chans),
-        ToTensorV2(transpose_mask=True),
-    ]
+    cutmix = True
+    cutmix_prob = 0.5
+    cutmix_alpha = 1.0
 
     # ================= Test cfg =====================
     use_tta = True
-    # tta_transforms = tta.aliases.d4_transform()
-    tta_transforms = tta.Compose(
-        [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
-            tta.Rotate90(angles=[0, 90, 180, 270]),
-            # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
-        ]
-    )
+
+    # ================= Model =====================
+    arch: str = "UnetPlusPlus"
+    encoder_name: str = "se_resnext50_32x4d"
+    in_chans: int = 6
 
 
 # ===============================================================
@@ -261,6 +221,85 @@ def concat_tile(image_list_2d: list[np.ndarray]) -> np.ndarray:
 # ===============================================================
 # Data
 # ===============================================================
+def rand_bbox(size: Container[int] , lam: float):
+    """ CutMixのbboxを作成する
+
+    Args:
+        size: (B, C, H, W)
+        lam: 乱数
+
+    Returns:
+        bbox: (left, top, right, bottom)
+
+    Reference:
+    [1]
+    https://github.com/clovaai/CutMix-PyTorch/blob/master/train.py#L279:295
+    """
+    W = size[3]
+    H = size[2]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = np.int(W * cut_rat)
+    cut_h = np.int(H * cut_rat)
+
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
+
+
+# cutmix implements using images, and labels
+def cutmix(
+    images: torch.Tensor, labels: torch.Tensor, alpha: float = 1.0
+) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
+    """ CutMixの実装
+
+    Args:
+        images: (N, C, H, W)
+        labels: (N, H, W)
+        alpha: beta分布のパラメータ
+
+    Returns:
+        mixed_image: (N, C, H, W)
+        mixed_labels: (N, H, W), mask
+        lambd: 重み
+        rand_idx: 乱数のインデックス
+
+    Reference:
+    [1]
+    https://github.com/clovaai/CutMix-PyTorch/blob/master/train.py#L229:L237
+    """
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"Invalid alpha: {alpha}")
+
+    # generate mixed sample
+    # lam = np.random.beta(args.beta, args.beta)
+    # rand_index = torch.randperm(input.size()[0]).cuda()
+    # target_a = target
+    # target_b = target[rand_index]
+    # bbx1, bby1, bbx2, bby2 = rand_bbox(input.size(), lam)
+    # input[:, :, bbx1:bbx2, bby1:bby2] = input[rand_index, :, bbx1:bbx2, bby1:bby2]
+    # # adjust lambda to exactly match pixel ratio
+    # lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
+
+    lam = np.random.beta(alpha, alpha)
+    batch_size = images.shape[0]
+    rand_idx = torch.randperm(batch_size)
+
+    # ランダムに矩形領域を選ぶ
+    bbx1, bby1, bbx2, bby2 = rand_bbox(images.size(), lam)
+
+    # mixed images
+    # images shape: (N, C, H, W)
+    images[:, :, bbx1:bbx2, bby1:bby2] = images[rand_idx, :, bbx1:bbx2, bby1:bby2]
+    return images, labels, lam, rand_idx
+
+
 def mixup(
     images: torch.Tensor, labels: torch.Tensor, alpha: float = 0.2
 ) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
@@ -321,8 +360,6 @@ def get_mask_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return image1_mask, image2_mask, image3_mask
 
 
-# q: この関数は何をしてますか　
-# a: 画像を読み込んで、画像の中心を切り取って、画像のサイズをtile_sizeに合わせる
 def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]:
     """画像とマスクを読み込む
 
@@ -467,8 +504,32 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
     """
     if phase == "train":
         return A.Compose(
-                cfg.train_compose,
-                    )
+            [
+                A.Resize(cfg.image_size[0], cfg.image_size[1]),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomBrightnessContrast(p=0.75),
+                A.ShiftScaleRotate(p=0.75),
+                A.OneOf(
+                    [
+                        A.GaussNoise(var_limit=[10, 50]),
+                        A.GaussianBlur(),
+                        A.MotionBlur(),
+                    ],
+                    p=0.4,
+                ),
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+                A.CoarseDropout(
+                    max_holes=1,
+                    max_width=int(cfg.image_size[1] * 0.3),
+                    max_height=int(cfg.image_size[0] * 0.3),
+                    fill_value=0,
+                    p=0.5,
+                ),
+                A.Normalize(mean=[0] * cfg.in_chans, std=[1] * cfg.in_chans),
+                ToTensorV2(transpose_mask=True),
+            ]
+        )
     elif phase == "valid":
         return A.Compose(
             [
@@ -551,7 +612,6 @@ class VCNet(nn.Module):
         in_chans: int = 65,
         encoder_name: str = "resnet18",
         weights: str | None = "imagenet",
-        dropout: float = 0.0
     ) -> None:
         super().__init__()
         self.model = smp.create_model(
@@ -582,16 +642,12 @@ def build_model(cfg: CFG) -> VCNet:
 
 
 class EnsembleModel:
-    def __init__(self, cfg: CFG, use_tta: bool = False) -> None:
+    def __init__(self, use_tta: bool = False) -> None:
         self.use_tta = use_tta
         self.models: list[VCNet] = []
-        self.cfg = cfg
 
     def add_model(self, model: VCNet) -> None:
-        if self.use_tta:
-            self.models.append(tta.SegmentationTTAWrapper(model, self.cfg.tta_transforms, merge_mode="mean"))
-        else:
-            self.models.append(model)
+        self.models.append(model)
 
     def __call__(self, x: torch.Tensor) -> np.ndarray:
         outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
@@ -600,7 +656,7 @@ class EnsembleModel:
 
 
 def build_ensemble_model(cfg: CFG) -> EnsembleModel:
-    ensemble_model = EnsembleModel(cfg=cfg, use_tta=cfg.use_tta)
+    ensemble_model = EnsembleModel(use_tta=cfg.use_tta)
     model_dir = CP_DIR / cfg.exp_name if IS_TRAIN else CP_DIR
     for fold in range(1, cfg.n_fold + 1):
         _model = build_model(cfg)
@@ -1001,8 +1057,8 @@ def train_per_epoch(
         for i, (image, target) in pbar:
             model.train()
 
-            if cfg.mixup:
-                image, target, _, _ = mixup(image, target)
+            if cfg.cutmix and np.random.random() < cfg.cutmix_prob():
+                image, target, _, _ = cutmix(image, target, cfg.cutmix_alpha)
 
             image = image.to(cfg.device, non_blocking=True)
             target = target.to(cfg.device, non_blocking=True)
@@ -1046,8 +1102,6 @@ def valid_per_epoch(
     model.eval()
     valid_losses = AverageMeter(name="valid_loss")
 
-    tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms , merge_mode="mean")
-
     for step, (image, target) in tqdm(
         enumerate(valid_loader),
         total=len(valid_loader),
@@ -1055,12 +1109,12 @@ def valid_per_epoch(
         dynamic_ncols=True,
         desc="Valid Per Epoch",
     ):
-        image = image.to(cfg.device, non_blocking=True)
-        target = target.to(cfg.device, non_blocking=True)
+        image = image.to(cfg.device)
+        target = target.to(cfg.device)
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = tta_model(image)
+            y_preds = model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
