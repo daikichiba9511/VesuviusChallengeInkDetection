@@ -1,7 +1,7 @@
 default: | help
 
 SHELL=/bin/bash
-POETRY_VERSION=1.4.0
+POETRY_VERSION=1.4.2
 
 setup: ## setup poetry and install packages
 	# bootstrap of poetry

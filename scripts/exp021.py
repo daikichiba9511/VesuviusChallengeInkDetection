@@ -1,11 +1,11 @@
-"""exp014
+"""exp021
 
-- copy from exp003
+- copy from exp014
 - 2.5D segmentation
 
 DIFF:
 
-- AWP
+- AWP :途中で勾配消失するから一旦やめる,途中まではいい感じ
 
 Reference:
 [1]
@@ -35,6 +35,7 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from sklearn.metrics import roc_auc_score
@@ -76,7 +77,7 @@ else:
     OUTPUT_DIR = Path(".")
     CP_DIR = Path("/kaggle/input/ink-model")
 
-THR = 0.4
+THR = 0.5
 
 
 def to_pickle(obj: Any, filename: Path) -> None:
@@ -106,11 +107,11 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp014_fold5_Unet++_se_resnext50_32x4d_gradual_warmup_mixup"
+    exp_name = "exp021_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile336_slide112"
     random_state = 42
-    image_size = (224, 224)
     tile_size: int = 224
-    stride: int = tile_size // 2
+    image_size = (tile_size, tile_size)
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
@@ -118,27 +119,83 @@ class CFG:
     epoch = 10
     batch_size = 8 * 2
     use_amp: bool = True
-    patience = 10
+    patience = 5
 
     scheduler = "GradualWarmupScheduler"
+    # scheduler = "OneCycleLR"
     warmup_factor = 10
     lr = 1e-4 / warmup_factor
 
     max_lr = 1e-5
     max_grad_norm = 1000.0
     loss = "BCEWithLogitsLoss"
-    # ================= Data cfg =====================
-    mixup = True
-    mixup_prob = 0.5
-    mixup_alpha = 0.2
+    # loss = "BCETverskyLoss"
+    # loss = "BCEDiceLoss"
+
+    # AWP params
+    # start_epoch = 10
+    # adv_lr = 1e-5
+    # adv_eps = 3
+    # adv_step = 1
 
     # ================= Test cfg =====================
     use_tta = True
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
-    encoder_name: str = "se_resnext50_32x4d"
+    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "tu-efficientnetv2_l"
+    # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
     in_chans: int = 6
+    # weights = "imagenet"
+    weights = "advprop"
+
+    # ================= Data cfg =====================
+    mixup = True
+    mixup_prob = 0.5
+    mixup_alpha = 0.2
+
+    train_compose = [
+        A.Resize(image_size[0], image_size[1]),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.75),
+        A.RandomContrast(limit=0.2, p=0.75),
+        # A.CLAHE(p=0.75),
+        A.ShiftScaleRotate(p=0.75),
+        A.OneOf(
+            [
+                A.GaussNoise(var_limit=[10, 50]),
+                A.GaussianBlur(),
+                A.MotionBlur(),
+            ],
+            p=0.4,
+        ),
+        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+        A.CoarseDropout(
+            max_holes=1,
+            max_width=int(image_size[1] * 0.3),
+            max_height=int(image_size[0] * 0.3),
+            fill_value=0,
+            p=0.5,
+        ),
+        A.Cutout(p=0.5),
+        A.Normalize(mean=[0] * in_chans, std=[1] * in_chans),
+        ToTensorV2(transpose_mask=True),
+    ]
+
+    # ================= Test cfg =====================
+    use_tta = True
+    # tta_transforms = tta.aliases.d4_transform()
+    tta_transforms = tta.Compose(
+        [
+            tta.HorizontalFlip(),
+            tta.VerticalFlip(),
+            tta.Rotate90(angles=[0, 90, 180, 270]),
+            # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
+        ]
+    )
 
 
 # ===============================================================
@@ -330,8 +387,6 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     # (h, w, in_chans)
     images = np.stack(images, axis=2)
     dbg(f"images.shape = {images.shape}")
-    pad0 = cfg.tile_size - images.shape[0] % cfg.tile_size
-    pad1 = cfg.tile_size - images.shape[1] % cfg.tile_size
     mask = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/inklabels.png"), 0)
     mask = np.pad(mask, pad_width=[(0, pad0), (0, pad1)], constant_values=0)
     mask = mask.astype(np.float32)
@@ -430,33 +485,7 @@ def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
         cfg: 設定
     """
     if phase == "train":
-        return A.Compose(
-            [
-                A.Resize(cfg.image_size[0], cfg.image_size[1]),
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.RandomBrightnessContrast(p=0.75),
-                A.ShiftScaleRotate(p=0.75),
-                A.OneOf(
-                    [
-                        A.GaussNoise(var_limit=[10, 50]),
-                        A.GaussianBlur(),
-                        A.MotionBlur(),
-                    ],
-                    p=0.4,
-                ),
-                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-                A.CoarseDropout(
-                    max_holes=1,
-                    max_width=int(cfg.image_size[1] * 0.3),
-                    max_height=int(cfg.image_size[0] * 0.3),
-                    fill_value=0,
-                    p=0.5,
-                ),
-                A.Normalize(mean=[0] * cfg.in_chans, std=[1] * cfg.in_chans),
-                ToTensorV2(transpose_mask=True),
-            ]
-        )
+        return A.Compose(cfg.train_compose)
     elif phase == "valid":
         return A.Compose(
             [
@@ -572,12 +601,22 @@ def build_model(cfg: CFG) -> VCNet:
 
 
 class EnsembleModel:
-    def __init__(self, use_tta: bool = False) -> None:
+    def __init__(self, cfg: CFG, use_tta: bool = False) -> None:
+        self.cfg = cfg
         self.use_tta = use_tta
-        self.models: list[VCNet] = []
+        self.models = []
 
     def add_model(self, model: VCNet) -> None:
-        self.models.append(model)
+        # if self.use_tta:
+        if False:
+            self.models.append(
+                tta.SegmentationTTAWrapper(
+                    model, self.cfg.tta_transforms, merge_mode="mean"
+                )
+            )
+
+        else:
+            self.models.append(model)
 
     def __call__(self, x: torch.Tensor) -> np.ndarray:
         outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
@@ -586,11 +625,11 @@ class EnsembleModel:
 
 
 def build_ensemble_model(cfg: CFG) -> EnsembleModel:
-    ensemble_model = EnsembleModel(use_tta=cfg.use_tta)
+    ensemble_model = EnsembleModel(cfg=cfg, use_tta=cfg.use_tta)
     model_dir = CP_DIR / cfg.exp_name if IS_TRAIN else CP_DIR
     for fold in range(1, cfg.n_fold + 1):
         _model = build_model(cfg)
-        _model = _model.to(cfg.device)
+        _model = _model.to(cfg.device, non_blocking=True)
         model_path = model_dir / f"checkpoint_{fold}.pth"
         logger.info(f"Load model from {model_path}")
         state = torch.load(model_path)
@@ -683,7 +722,7 @@ class AverageMeter:
         self.avg = self.sum / self.count
         self.rows.append(value)
 
-    def to_dict(self) -> dict[str, list[float | int]]:
+    def to_dict(self) -> dict[str, list[float | int] | str | float]:
         return {"name": self.name, "avg": self.avg, "row_values": self.rows}
 
 
@@ -859,7 +898,7 @@ def plot_dataset(
         [
             t
             for t in get_alb_transforms(cfg=cfg, phase="train")
-            if not isinstance(t, (A.Normalize, A.pytorch.ToTensorV2, ToTensorV2))
+            if not isinstance(t, (A.Normalize, ToTensorV2))
         ]
     )
     dataset = VCDataset(cfg=cfg, images=train_images, labels=train_labels)
@@ -1003,6 +1042,13 @@ class AWP:
                         self.backup[name] + grad_eps,
                     )
 
+    def _restore(self) -> None:
+        for name, param in self.model.named_parameters():
+            if name in self.backup:
+                param.data = self.backup[name]
+        self.backup = {}
+        self.backup_eps = {}
+
 
 # ==========================================================
 # training function
@@ -1018,23 +1064,23 @@ def train_per_epoch(
     scheduler,
     epoch: int,
 ) -> float:
-    awp = AWP(
-        model=model,
-        optimizer=optimizer,
-        criterion=criterion,
-        scaler=scaler,
-        adv_lr=cfg.adv_lr,
-        adv_eps=cfg.adv_eps,
-        start_epoch=cfg.start_epoch,
-        adv_step=cfg.adv_step,
-    )
+    # awp = AWP(
+    #     model=model,
+    #     optimizer=optimizer,
+    #     criterion=criterion,
+    #     scaler=scaler,
+    #     adv_lr=cfg.adv_lr,
+    #     adv_eps=cfg.adv_eps,
+    #     start_epoch=cfg.start_epoch,
+    #     adv_step=cfg.adv_step,
+    # )
     running_loss = AverageMeter(name="train_loss")
     # train_losses = []
     with tqdm(enumerate(train_loader), total=len(train_loader)) as pbar:
-        for i, (image, target) in pbar:
+        for step, (image, target) in pbar:
             model.train()
 
-            if cfg.mixup and np.random.rand() < cfg.mixup_prob:
+            if cfg.mixup and np.random.rand() <= cfg.mixup_prob:
                 image, target, _, _ = mixup(image, target, alpha=cfg.mixup_alpha)
 
             image = image.to(cfg.device, non_blocking=True)
@@ -1049,17 +1095,22 @@ def train_per_epoch(
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
-
-            _ = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
-
+            # awp.attack_backward(image, target, step)
+            scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), cfg.max_grad_norm
+            )
             scaler.step(optimizer)
             scaler.update()
-            model.zero_grad()
+            # Refs:
+            # [1]
+            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
+            # model.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             scheduler.step()
 
             pbar.set_postfix({"epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
             learning_rate = optimizer.param_groups[0]["lr"]
-
             wandb.log(
                 {f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate}
             )
@@ -1067,19 +1118,21 @@ def train_per_epoch(
 
 
 def valid_per_epoch(
-    cfg,
+    cfg: CFG,
     model: nn.Module,
-    valid_loader,
-    criterion,
+    valid_loader: DataLoader,
+    criterion: Callable,
     fold: int,
     epoch: int,
     valid_xyxys: np.ndarray,
-    valid_masks,
+    valid_masks: torch.Tensor,
 ) -> tuple[float, np.ndarray]:
     mask_preds = np.zeros(valid_masks.shape)
     mask_count = np.zeros(valid_masks.shape)
     model.eval()
     valid_losses = AverageMeter(name="valid_loss")
+
+    tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
 
     for step, (image, target) in tqdm(
         enumerate(valid_loader),
@@ -1088,12 +1141,12 @@ def valid_per_epoch(
         dynamic_ncols=True,
         desc="Valid Per Epoch",
     ):
-        image = image.to(cfg.device)
-        target = target.to(cfg.device)
+        image = image.to(cfg.device, non_blocking=True)
+        target = target.to(cfg.device, non_blocking=True)
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
+            y_preds = tta_model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
@@ -1189,6 +1242,84 @@ def get_loss(cfg: CFG) -> nn.Module:
     if cfg.loss == "BCEWithLogitsLoss":
         loss = nn.BCEWithLogitsLoss()
         return loss
+    if cfg.loss == "DiceLoss":
+        loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
+        return loss
+    if cfg.loss == "LovaszLoss":
+        loss = smp.losses.LovaszLoss(mode="binary", from_logits=True)
+        return loss
+    if cfg.loss == "BCEDiceLoss":
+
+        def _loss(y_pred, y_true, alpha=0.7):
+            bce_loss = nn.BCEWithLogitsLoss()
+            dice_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
+            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * dice_loss(
+                y_pred, y_true
+            )
+
+        return _loss
+    if cfg.loss == "BCELovaszLoss":
+
+        def _loss(y_pred, y_true, alpha=0.5):
+            bce_loss = nn.BCEWithLogitsLoss()
+            lobasz_loss = smp.losses.LovaszLoss(mode="binary", from_logits=True)
+            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * lobasz_loss(
+                y_pred, y_true
+            )
+
+        return _loss
+
+    if cfg.loss == "BCEDiceLobaszLoss":
+
+        def _loss(y_pred, y_true, alpha=0.7, beta=0.1):
+            if alpha + beta > 1:
+                raise ValueError("alpha + beta must be less than 1")
+            bce_loss = nn.BCEWithLogitsLoss()
+            dice_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
+            lobasz_loss = smp.losses.LovaszLoss(mode="binary", from_logits=True)
+            return (
+                alpha * bce_loss(y_pred, y_true)
+                + beta * lobasz_loss(y_pred, y_true)
+                + (1 - alpha - beta) * dice_loss(y_pred, y_true)
+            )
+
+        return _loss
+
+    if cfg.loss == "TverskyLoss":
+        # alpha: FP weight, beta: FN weight
+        loss = smp.losses.TverskyLoss(
+            mode="binary", from_logits=True, alpha=0.7, beta=0.3
+        )
+        return loss
+
+    if cfg.loss == "BCETverskyLoss":
+
+        def _loss(y_pred, y_true, lamb=0.5):
+            bce_loss = nn.BCEWithLogitsLoss()
+            tversky_loss = smp.losses.TverskyLoss(
+                mode="binary", from_logits=True, alpha=0.7, beta=0.3
+            )
+            return lamb * bce_loss(y_pred, y_true) + (1 - lamb) * tversky_loss(
+                y_pred, y_true
+            )
+
+        return _loss
+
+    if cfg.loss == "BCEDiceTverskyLoss":
+
+        def _loss(y_pred, y_true):
+            bce_loss = nn.BCEWithLogitsLoss()
+            dice_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
+            tversky_loss = smp.losses.TverskyLoss(
+                mode="binary", from_logits=True, alpha=0.7, beta=0.3
+            )
+            return (
+                bce_loss(y_pred, y_true)
+                + dice_loss(y_pred, y_true)
+                + 2 * tversky_loss(y_pred, y_true)
+            )
+
+        return _loss
 
     raise ValueError(f"Invalid loss: {cfg.loss}")
 
@@ -1266,6 +1397,7 @@ def train(cfg: CFG) -> None:
             arch=cfg.arch,
             encoder_name=cfg.encoder_name,
             in_chans=cfg.in_chans,
+            weights=cfg.weights,
         )
         net = net.to(device=cfg.device)
 
@@ -1488,8 +1620,8 @@ def read_image(cfg: CFG, fragment_id: str) -> np.ndarray:
         image = np.pad(image, [(0, pad0), (0, pad1)], constant_values=0)
 
         images.append(image)
-    images = np.stack(images, axis=2)
 
+    images = np.stack(images, axis=2)
     return images
 
 
@@ -1540,9 +1672,12 @@ def make_test_datast(cfg: CFG, fragment_id: str) -> tuple[DataLoader, np.ndarray
     return test_loader, xyxy_list
 
 
+# predict function
 def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     fragment_ids = list(DATA_DIR.rglob("test/*"))
     model = build_ensemble_model(cfg=cfg)
+    if cfg.use_tta:
+        model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
     for fragment_id, fragment_path in enumerate(fragment_ids, start=1):
         test_loader, xyxy_list = make_test_datast(
             cfg=cfg, fragment_id=fragment_path.stem
@@ -1591,7 +1726,9 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
 
     if IS_TRAIN:
         logger.info("save mask_pred_count, mask_pred")
-        plt.imsave(OUTPUT_DIR / cfg.exp_name / "mas-pred-count.png", mask_pred_count)
+        plt.imsave(
+            str(OUTPUT_DIR / cfg.exp_name / "mas-pred-count.png"), mask_pred_count
+        )
         # plt.imsave(OUTPUT_DIR / cfg.exp_name / "mas-pred.png", mask_pred)
         plt.close("all")
     else:
