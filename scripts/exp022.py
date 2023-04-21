@@ -99,7 +99,6 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -108,7 +107,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp021_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp022_fold5_MANet_effb7_advprop_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -123,9 +122,8 @@ class CFG:
     patience = 5
 
     scheduler = "GradualWarmupScheduler"
-    # scheduler = "OneCycleLR"
     warmup_factor = 10
-    lr = 1e-4 / warmup_factor
+    lr = 5e-5 / warmup_factor
 
     max_lr = 1e-5
     max_grad_norm = 1000.0
@@ -143,7 +141,8 @@ class CFG:
     use_tta = True
 
     # ================= Model =====================
-    arch: str = "UnetPlusPlus"
+    # arch: str = "UnetPlusPlus"
+    arch: str = "MANet"
     # encoder_name: str = "se_resnext50_32x4d"
     encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
@@ -1124,10 +1123,7 @@ def valid_per_epoch(
     model.eval()
     valid_losses = AverageMeter(name="valid_loss")
 
-    if cfg.use_tta:
-        tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
-    else:
-        tta_model = model
+    tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
 
     for step, (image, target) in tqdm(
         enumerate(valid_loader),
@@ -1141,7 +1137,7 @@ def valid_per_epoch(
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
+            y_preds = tta_model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)

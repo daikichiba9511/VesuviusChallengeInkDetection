@@ -5,7 +5,7 @@
 
 DIFF:
 
-- AWP :途中で勾配消失するから一旦やめる,途中まではいい感じ
+- full 3D
 
 Reference:
 [1]
@@ -99,7 +99,6 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -118,7 +117,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 10
-    batch_size = 8 * 2
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 5
 
@@ -148,7 +147,7 @@ class CFG:
     encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-    in_chans: int = 6
+    in_chans: int = 30
     # weights = "imagenet"
     weights = "advprop"
 
@@ -1082,8 +1081,8 @@ def train_per_epoch(
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
-                loss = criterion(outputs, target)
 
+            loss = criterion(outputs, target)
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
@@ -1125,7 +1124,9 @@ def valid_per_epoch(
     valid_losses = AverageMeter(name="valid_loss")
 
     if cfg.use_tta:
-        tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
+        tta_model = tta.SegmentationTTAWrapper(
+            model, cfg.tta_transforms, merge_mode="mean"
+        )
     else:
         tta_model = model
 
@@ -1141,8 +1142,9 @@ def valid_per_epoch(
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
-            loss = criterion(y_preds, target)
+            y_preds = tta_model(image)
+
+        loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})

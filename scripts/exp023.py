@@ -1,11 +1,13 @@
-"""exp021
+"""exp022
 
 - copy from exp014
 - 2.5D segmentation
 
 DIFF:
 
-- AWP :途中で勾配消失するから一旦やめる,途中まではいい感じ
+- denoise
+    - opencvを使う
+    - <https://docs.opencv.org/3.4/d5/d69/tutorial_py_non_local_means.html>
 
 Reference:
 [1]
@@ -99,7 +101,6 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -108,7 +109,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp021_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp023_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_opencv_denoise"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -375,6 +376,14 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     for i in idxs:
         image = cv2.imread(
             str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0
+        )
+
+        # paramter
+        # h: filter strength. Big h value perfectly removes noise but also removes image details, smaller h value preserves details but also preserves some noise
+        # templateWindowSize: Size in pixels of the template patch that is used to compute weights. Should be odd. Recommended value 7 pixels
+        # searchWindowSize: Size in pixels of the window that is used to compute weighted average for given pixel. Should be odd. Affect performance linearly: greater searchWindowsSize - greater denoising time. Recommended value 21 pixels
+        image = cv2.fastNlMeansDenoising(
+            src=image, dst=None, h=10, templateWindowSize=7, searchWindowSize=21
         )
 
         assert image.ndim == 2
@@ -1124,10 +1133,7 @@ def valid_per_epoch(
     model.eval()
     valid_losses = AverageMeter(name="valid_loss")
 
-    if cfg.use_tta:
-        tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
-    else:
-        tta_model = model
+    tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
 
     for step, (image, target) in tqdm(
         enumerate(valid_loader),
@@ -1141,7 +1147,7 @@ def valid_per_epoch(
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
+            y_preds = tta_model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
