@@ -1125,7 +1125,9 @@ def valid_per_epoch(
     valid_losses = AverageMeter(name="valid_loss")
 
     if cfg.use_tta:
-        tta_model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
+        tta_model = tta.SegmentationTTAWrapper(
+            model, cfg.tta_transforms, merge_mode="mean"
+        )
     else:
         tta_model = model
 
@@ -1141,7 +1143,7 @@ def valid_per_epoch(
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = model(image)
+            y_preds = tta_model(image)
             loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)

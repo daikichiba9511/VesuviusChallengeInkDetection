@@ -1,11 +1,11 @@
-"""exp025
+"""exp026
 
 - copy from exp021
 - 2.5D segmentation
 
 DIFF:
 
-- stride = tile_size // 4
+- monaiを使ってみる
 
 Reference:
 [1]
@@ -29,6 +29,7 @@ from typing import Any, Callable
 import albumentations as A
 import cv2
 import matplotlib.pyplot as plt
+import monai
 import numpy as np
 import pandas as pd
 import segmentation_models_pytorch as smp
@@ -38,6 +39,7 @@ import torch.optim as optim
 import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
+from monai.networks.nets.swin_unetr import SwinUNETR
 from sklearn.metrics import roc_auc_score
 from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, Dataset
@@ -99,6 +101,7 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -107,17 +110,17 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp025_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp021_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 4
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 10
-    batch_size = 8 * 4
+    batch_size = 8 * 2
     use_amp: bool = True
     patience = 5
 
@@ -142,6 +145,8 @@ class CFG:
     use_tta = True
 
     # ================= Model =====================
+    # -- config smp
+    use_smp = False
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
     encoder_name: str = "timm-efficientnet-b7"
@@ -150,6 +155,9 @@ class CFG:
     in_chans: int = 6
     # weights = "imagenet"
     weights = "advprop"
+
+    # -- config monai
+    arch = "SwinUNETR"
 
     # ================= Data cfg =====================
     mixup = True
@@ -566,21 +574,29 @@ class VCDataset(Dataset):
 class VCNet(nn.Module):
     def __init__(
         self,
+        cfg: CFG,
         num_classes: int,
         arch: str = "Unet",
         in_chans: int = 65,
         encoder_name: str = "resnet18",
         weights: str | None = "imagenet",
+        use_smp=False,
     ) -> None:
         super().__init__()
-        self.model = smp.create_model(
-            arch=arch,
-            encoder_name=encoder_name,
-            encoder_weights=weights,
-            in_channels=in_chans,
-            classes=num_classes,
-            activation=None,
-        )
+        if cfg.use_smp:
+            self.model = smp.create_model(
+                arch=arch,
+                encoder_name=encoder_name,
+                encoder_weights=weights,
+                in_channels=in_chans,
+                classes=num_classes,
+                activation=None,
+            )
+        else:
+            if arch == "SwinUNETR":
+                self.model = SwinUNETR(
+                    img_size=cfg.image_size, in_channels=cfg.in_chans, out_channels=1
+                )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         output = self.model(x)
@@ -591,6 +607,7 @@ class VCNet(nn.Module):
 def build_model(cfg: CFG) -> VCNet:
     logger.info(f"Build model: {cfg.arch} with {cfg.encoder_name} encoder")
     model = VCNet(
+        cfg=cfg,
         num_classes=1,
         arch=cfg.arch,
         encoder_name=cfg.encoder_name,
@@ -1081,8 +1098,8 @@ def train_per_epoch(
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
-            loss = criterion(outputs, target)
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
@@ -1143,8 +1160,7 @@ def valid_per_epoch(
 
         with torch.inference_mode():
             y_preds = tta_model(image)
-
-        loss = criterion(y_preds, target)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})
@@ -1390,6 +1406,7 @@ def train(cfg: CFG) -> None:
         valid_mask_gt = np.pad(valid_mask_gt, ((0, pad0), (0, pad1)), constant_values=0)
 
         net = VCNet(
+            cfg=cfg,
             num_classes=1,
             arch=cfg.arch,
             encoder_name=cfg.encoder_name,
@@ -1521,6 +1538,7 @@ def valid(cfg: CFG) -> None:
         valid_xyxys = np.stack(valid_xyxys, axis=0)
 
         net = VCNet(
+            cfg=cfg,
             num_classes=1,
             arch=cfg.arch,
             encoder_name=cfg.encoder_name,

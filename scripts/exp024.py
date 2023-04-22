@@ -108,7 +108,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp021_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_denoise_enhance"
+    exp_name = "exp024_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_denoise_enhance"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
