@@ -1,11 +1,11 @@
-"""exp025
+"""exp030
 
 - copy from exp021
 - 2.5D segmentation
 
 DIFF:
 
-- stride = tile_size // 4
+- SegFormer
 
 Reference:
 [1]
@@ -35,6 +35,7 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import transformers
 import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
@@ -99,6 +100,7 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -107,17 +109,17 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp025_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide56"
+    exp_name = "exp030_fold5_SegFormer_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 4
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 10
-    batch_size = 8 * 4
+    batch_size = 8 * 2
     use_amp: bool = True
     patience = 5
 
@@ -142,7 +144,8 @@ class CFG:
     use_tta = True
 
     # ================= Model =====================
-    arch: str = "UnetPlusPlus"
+    # arch: str = "UnetPlusPlus"
+    arch = "SegFormer"
     # encoder_name: str = "se_resnext50_32x4d"
     encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
@@ -573,19 +576,35 @@ class VCNet(nn.Module):
         weights: str | None = "imagenet",
     ) -> None:
         super().__init__()
-        self.model = smp.create_model(
-            arch=arch,
-            encoder_name=encoder_name,
-            encoder_weights=weights,
-            in_channels=in_chans,
-            classes=num_classes,
-            activation=None,
-        )
+        self.arch = arch
+        if arch == "SegFormer":
+            model_name = "microsoft/segformer-b0-8x4s"
+            self.image_processor = transformers.AutoImageProcessor.from_pretrained(
+                model_name
+            )
+            self.models = transformers.SegformerForSemanticSegmentation.from_pretrained(
+                model_name
+            )
+
+        else:
+            self.model = smp.create_model(
+                arch=arch,
+                encoder_name=encoder_name,
+                encoder_weights=weights,
+                in_channels=in_chans,
+                classes=num_classes,
+                activation=None,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self.model(x)
-        # output = output.squeeze(-1)
-        return output
+        if self.arch == "SegFormer":
+            x = self.image_processor(x, return_tensors="pt")
+            outputs = self.model(**x)
+            return outputs.logits
+        else:
+            output = self.model(x)
+            # output = output.squeeze(-1)
+            return output
 
 
 def build_model(cfg: CFG) -> VCNet:
@@ -1081,8 +1100,8 @@ def train_per_epoch(
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
-            loss = criterion(outputs, target)
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
@@ -1143,8 +1162,7 @@ def valid_per_epoch(
 
         with torch.inference_mode():
             y_preds = tta_model(image)
-
-        loss = criterion(y_preds, target)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})

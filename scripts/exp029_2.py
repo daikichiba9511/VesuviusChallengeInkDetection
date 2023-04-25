@@ -1,11 +1,11 @@
-"""exp025
+"""exp029
 
 - copy from exp021
 - 2.5D segmentation
 
 DIFF:
 
-- stride = tile_size // 4
+- in_chans=6でスタート地点を表面方向(65に近い方向)にずらす
 
 Reference:
 [1]
@@ -99,6 +99,7 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -107,17 +108,17 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp025_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide56"
+    exp_name = "exp029_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_middleslide2"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 4
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 10
-    batch_size = 8 * 4
+    batch_size = 8 * 2
     use_amp: bool = True
     patience = 5
 
@@ -147,11 +148,14 @@ class CFG:
     encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
+
     in_chans: int = 6
     # weights = "imagenet"
     weights = "advprop"
 
     # ================= Data cfg =====================
+    middle_start_stride = 2
+
     mixup = True
     mixup_prob = 0.5
     mixup_alpha = 0.2
@@ -367,7 +371,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     """
     images = []
 
-    mid = 65 // 2
+    mid = 65 // 2 + cfg.middle_start_stride
     start = mid - cfg.in_chans // 2
     end = mid + cfg.in_chans // 2
     idxs = range(start, end)
@@ -1081,8 +1085,8 @@ def train_per_epoch(
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
-            loss = criterion(outputs, target)
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
@@ -1143,8 +1147,7 @@ def valid_per_epoch(
 
         with torch.inference_mode():
             y_preds = tta_model(image)
-
-        loss = criterion(y_preds, target)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})

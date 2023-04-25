@@ -145,7 +145,8 @@ class CFG:
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
-    encoder_name: str = "timm-efficientnet-b7"
+    encoder_name = "timm-efficientnet-b1"
+    # encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
     in_chans: int = 6

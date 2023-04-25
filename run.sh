@@ -1,3 +1,13 @@
-WANDB_MODE=online poetry run python scripts/exp023.py
-WANDB_MODE=online poetry run python scripts/exp024.py
-WANDB_MODE=online poetry run python scripts/exp025.py
+# WANDB_MODE=online poetry run python scripts/exp023.py
+# WANDB_MODE=online poetry run python scripts/exp024.py
+# WANDB_MODE=online poetry run python scripts/exp025.py
+# WANDB_MODE=online poetry run python scripts/exp026.py
+WANDB_MODE=online poetry run python scripts/exp027.py
+WANDB_MODE=online poetry run python scripts/exp028.py
+WANDB_MODE=online poetry run python scripts/exp029.py
+# WANDB_MODE=online poetry run python scripts/exp029_2.py
+# WANDB_MODE=online poetry run python scripts/exp030.py
+# WANDB_MODE=online poetry run python scripts/exp031.py
+# WANDB_MODE=online poetry run python scripts/exp032.py
+# WANDB_MODE=online poetry run python scripts/exp033.py
+# WANDB_MODE=online poetry run python scripts/exp034.py

@@ -1,11 +1,15 @@
-"""exp025
+"""exp021
 
-- copy from exp021
+- copy from exp014
 - 2.5D segmentation
 
 DIFF:
 
-- stride = tile_size // 4
+- sharpen系augmentation
+    - https://albumentations.ai/docs/api_reference/augmentations/transforms/#albumentations.augmentations.transforms.Sharpen
+
+- RandomResizedCrop
+
 
 Reference:
 [1]
@@ -99,6 +103,7 @@ def seed_everything(seed: int = 42) -> None:
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(False)
 
 
 # ==============================================================
@@ -107,17 +112,17 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp025_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide56"
+    exp_name = "exp028_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_sharpen_random_resized_crop"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 4
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 10
-    batch_size = 8 * 4
+    batch_size = 8 * 2
     use_amp: bool = True
     patience = 5
 
@@ -157,11 +162,18 @@ class CFG:
     mixup_alpha = 0.2
 
     train_compose = [
-        A.Resize(image_size[0], image_size[1]),
+        # A.Resize(image_size[0], image_size[1]),
+        A.RandomResizedCrop(
+            height=image_size[0],
+            width=image_size[1],
+            scale=(0.08, 1.0),
+            always_apply=True,
+        ),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.75),
-        A.RandomContrast(limit=0.2, p=0.75),
+        # A.RandomBrightnessContrast(p=0.75),
+        # A.RandomContrast(limit=0.2, p=0.75),
+        A.Sharpen(p=0.75),
         # A.CLAHE(p=0.75),
         A.ShiftScaleRotate(p=0.75),
         A.OneOf(
@@ -1081,8 +1093,8 @@ def train_per_epoch(
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
-            loss = criterion(outputs, target)
             running_loss.update(value=loss.item(), n=batch_size)
 
             scaler.scale(loss).backward()
@@ -1143,8 +1155,7 @@ def valid_per_epoch(
 
         with torch.inference_mode():
             y_preds = tta_model(image)
-
-        loss = criterion(y_preds, target)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})
