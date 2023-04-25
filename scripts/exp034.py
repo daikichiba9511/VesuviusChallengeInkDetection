@@ -611,9 +611,9 @@ class EnsembleModel:
     def add_model(self, model: VCNet) -> None:
         self.models.append(model)
 
-    def __call__(self, x: torch.Tensor) -> np.ndarray:
-        outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
-        avg_preds = np.mean(outputs, axis=0)
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        outputs = [torch.sigmoid(model(x)).to("cpu") for model in self.models]
+        avg_preds = torch.mean(torch.stack(outputs), axis=0)
         return avg_preds
 
 
@@ -1706,7 +1706,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
             batch_size = images.size(0)
 
             with torch.inference_mode():
-                y_preds = model(images)
+                y_preds = model(images).numpy()
 
             start_idx = step * cfg.batch_size
             end_idx = start_idx + batch_size
