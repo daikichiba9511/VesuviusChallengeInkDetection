@@ -11,6 +11,12 @@ setup: ## setup poetry and install packages
 		poetry --version; \
 	fi;
 	poetry install --no-interaction
+	if [[ ! -d ./input ]]; then \
+		mkdir ./input; \
+		pip install kaggle; \
+		kaggle competitions download -c vesuvius-challenge-ink-detection -p ./input; \
+		unzip ./input/vesuvius-challenge-ink-detection.zip -d ./input/vesuvius-challenge-ink-detection; \
+	fi;
 
 lint: ## lint code
 	poetry run pflake8 scripts src

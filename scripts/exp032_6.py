@@ -114,7 +114,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp032_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
+    exp_name = "exp032_6_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -124,7 +124,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 2
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 5
 
