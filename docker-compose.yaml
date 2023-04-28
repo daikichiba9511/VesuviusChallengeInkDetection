@@ -1,0 +1,25 @@
+version: '3'
+services:
+  local:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    image: kaggle-dev-environment
+    container_name: kaggle-dev-container
+    shm_size: 120g
+    ports:
+      - "127.0.0.1:8893:8893"
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [ utility, compute, video ]
+    volumes:
+      - .:/workspace/working
+      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOME}/.kaggle:/root/.kaggle
+      - ${HOME}/.gitconfig:${HOME}/.gitconfig:ro
+      - ${HOME}/.config/git/ignore:${HOME}/.config/git/ignore:ro

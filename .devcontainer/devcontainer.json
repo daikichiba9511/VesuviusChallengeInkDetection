@@ -1,0 +1,7 @@
+{
+    "dockerComposeFile": [
+        "../docker-compose.yml"
+    ],
+    "service": "local",
+    "workspaceFolder": "/workspace/working"
+}
