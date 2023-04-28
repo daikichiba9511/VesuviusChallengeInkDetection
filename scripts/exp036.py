@@ -1,11 +1,12 @@
-"""exp032
+"""exp036
 
-- copy from exp021
+- copy from exp034
 - 2.5D segmentation
 
 DIFF:
 
-- CLS Headを追加する
+- hard aug & soft aug
+    - 残りの数エポックでsoft augを使う
 
 Reference:
 [1]
@@ -108,9 +109,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = (
-        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
-    )
+    exp_name = "exp036_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74_softaug_from10"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -119,7 +118,7 @@ class CFG:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 10
+    epoch = 15
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 5
@@ -160,6 +159,8 @@ class CFG:
     mixup_prob = 0.5
     mixup_alpha = 0.2
 
+    start_soft_aug_epoch = 10
+
     train_compose = [
         A.Resize(image_size[0], image_size[1]),
         A.HorizontalFlip(p=0.5),
@@ -185,6 +186,15 @@ class CFG:
             p=0.5,
         ),
         A.Cutout(p=0.5),
+        A.Normalize(mean=[0] * in_chans, std=[1] * in_chans),
+        ToTensorV2(transpose_mask=True),
+    ]
+
+    soft_train_compose = [
+        A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.ShiftScaleRotate(p=0.5),
         A.Normalize(mean=[0] * in_chans, std=[1] * in_chans),
         ToTensorV2(transpose_mask=True),
     ]
@@ -482,14 +492,14 @@ def get_train_valid_split(
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
 
 
-def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
+def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose | tuple[A.Compose, A.Compose]:
     """
     Args:
         phase: {"train", "valid", "test"}
         cfg: 設定
     """
     if phase == "train":
-        return A.Compose(cfg.train_compose)
+        return A.Compose(cfg.train_compose), A.Compose(cfg.soft_train_compose)
     elif phase == "valid":
         return A.Compose(
             [
@@ -526,21 +536,36 @@ class VCDataset(Dataset):
         images: list[np.ndarray],
         labels: list[np.ndarray] | None,
         phase: str = "train",
-        transform_fn: Callable | None = None,
+        transform_fn: Callable | tuple[Callable, Callable] | None = None,
     ) -> None:
         self.cfg = cfg
         self.images = images
         self.labels = labels
         self.phase = phase
-        self.transform_fn = transform_fn
+        if phase == "train":
+            if not isinstance(transform_fn, tuple):
+                raise ValueError(
+                    "Expedted transform_fn to be tuple, but got not tuple."
+                )
+            self.transform_fn, self.soft_transform_fn = transform_fn
+        else:
+            self.transform_fn = transform_fn
 
     def __len__(self) -> int:
         return len(self.images)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
+    def __getitem__(
+        self, idx: int
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor]
+        | torch.Tensor
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
         """
         Returns:
-            (image, mask)
+            train: (hard_image, hard_mask, soft_image, soft_mask)
+            valid: (image, mask)
+            test: (image)
         """
         image = self.images[idx]
         # phase == "test"
@@ -551,17 +576,28 @@ class VCDataset(Dataset):
                 return image
             else:
                 return torch.tensor(image)
+        # phase == "train" or "valid"
         else:
             mask = self.labels[idx]
-            if self.transform_fn is not None:
+            if self.transform_fn is None:
+                raise ValueError("transform_fn is None.")
+            if isinstance(self.transform_fn, tuple):
+                raise ValueError("Expected transform_fn to be not tuple.")
+
+            if self.phase == "train":
+                hard_augmented = self.transform_fn(image=image, mask=mask)
+                soft_augmented = self.soft_transform_fn(image=image, mask=mask)
+                hard_image = hard_augmented["image"]
+                hard_mask = hard_augmented["mask"]
+                soft_image = soft_augmented["image"]
+                soft_mask = soft_augmented["mask"]
+                return hard_image, hard_mask, soft_image, soft_mask
+
+            else:
                 augmented = self.transform_fn(image=image, mask=mask)
                 image = augmented["image"]
                 mask = augmented["mask"]
-
-            if isinstance(mask, np.ndarray):
-                mask = torch.tensor(mask)
-
-            return image, mask
+                return image, mask
 
 
 # =======================================================================
@@ -577,11 +613,6 @@ class VCNet(nn.Module):
         weights: str | None = "imagenet",
     ) -> None:
         super().__init__()
-        aux_params = {
-            "classes": 1,
-            "pooling": "avg",
-            "dropout": 0.5,
-        }
         self.model = smp.create_model(
             arch=arch,
             encoder_name=encoder_name,
@@ -589,23 +620,12 @@ class VCNet(nn.Module):
             in_channels=in_chans,
             classes=num_classes,
             activation=None,
-            aux_params=aux_params,
         )
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """
-        Args:
-            x: (N, C, H, W)
-        Returns:
-            masks: (N, 1, H, W)
-            labels: (N, 1)
-        """
-        masks, labels = self.model(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output = self.model(x)
         # output = output.squeeze(-1)
-        return {
-            "pred_mask_logits": masks,
-            "pred_label_logits": labels,
-        }
+        return output
 
 
 def build_model(cfg: CFG) -> VCNet:
@@ -629,9 +649,9 @@ class EnsembleModel:
     def add_model(self, model: VCNet) -> None:
         self.models.append(model)
 
-    def __call__(self, x: torch.Tensor) -> np.ndarray:
-        outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
-        avg_preds = np.mean(outputs, axis=0)
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        outputs = [torch.sigmoid(model(x)).to("cpu") for model in self.models]
+        avg_preds = torch.mean(torch.stack(outputs), axis=0)
         return avg_preds
 
 
@@ -1061,23 +1081,6 @@ class AWP:
         self.backup_eps = {}
 
 
-def make_cls_label(mask: torch.Tensor) -> torch.Tensor:
-    """make classification label from mask
-
-    Args:
-        mask (torch.Tensor): mask
-
-    Returns:
-        torch.Tensor: classification label
-    """
-
-    # (labels.view(b, -1).sum(-1) > 0).float().view(b, 1)
-    batch_size = len(mask)
-    # shape: (N, 1)
-    target_cls = (mask.view(batch_size, -1).sum(-1) > 0).float().view(batch_size, 1)
-    return target_cls
-
-
 # ==========================================================
 # training function
 # ==========================================================
@@ -1105,25 +1108,24 @@ def train_per_epoch(
     running_loss = AverageMeter(name="train_loss")
     # train_losses = []
     with tqdm(enumerate(train_loader), total=len(train_loader)) as pbar:
-        for step, (image, target) in pbar:
+        for step, (image, target, soft_image, soft_mask) in pbar:
             model.train()
 
             if cfg.mixup and np.random.rand() <= cfg.mixup_prob:
                 image, target, _, _ = mixup(image, target, alpha=cfg.mixup_alpha)
 
-            image = image.to(cfg.device, non_blocking=True)
-            # (N, H, W)
-            target_mask = target.to(cfg.device, non_blocking=True)
-            batch_size = target.size(0)
-            target_cls = make_cls_label(target_mask)
+            if epoch < cfg.start_soft_aug_epoch:
+                image = image.to(cfg.device, non_blocking=True)
+                target = target.to(cfg.device, non_blocking=True)
+            else:
+                image = soft_image.to(cfg.device, non_blocking=True)
+                target = soft_mask.to(cfg.device, non_blocking=True)
 
+            batch_size = target.size(0)
             with autocast(device_type="cuda", enabled=cfg.use_amp):
-                pred = model(image)
-                pred_mask = pred["pred_mask_logits"]
-                pred_label = pred["pred_label_logits"]
-                loss_mask = criterion(pred_mask, target_mask)
-                loss_cls = criterion(pred_label, target_cls)
-                loss = loss_mask + 0.3 * loss_cls
+                outputs = model(image)
+                assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
             running_loss.update(value=loss.item(), n=batch_size)
 
@@ -1145,11 +1147,7 @@ def train_per_epoch(
             pbar.set_postfix({"epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
             learning_rate = optimizer.param_groups[0]["lr"]
             wandb.log(
-                {
-                    f"fold{fold}_train_loss": loss.item(),
-                    "learning_rate": learning_rate,
-                    f"fold{fold}_train_cls_loss": loss_cls.item(),
-                }
+                {f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate}
             )
     return running_loss.avg
 
@@ -1171,10 +1169,7 @@ def valid_per_epoch(
 
     if cfg.use_tta:
         tta_model = tta.SegmentationTTAWrapper(
-            model,
-            cfg.tta_transforms,
-            merge_mode="mean",
-            output_mask_key="pred_mask_logits",
+            model, cfg.tta_transforms, merge_mode="mean"
         )
     else:
         tta_model = model
@@ -1188,30 +1183,14 @@ def valid_per_epoch(
     ):
         image = image.to(cfg.device, non_blocking=True)
         target = target.to(cfg.device, non_blocking=True)
-        target_cls = make_cls_label(target)
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            # segm_logits: (N, 1, H, W)
-            y_preds = tta_model(image)["pred_mask_logits"]
-            loss_mask = criterion(y_preds, target)
-
-            # cls: (N, 1)
-            pred = model(image)
-            pred_logtis = pred["pred_label_logits"]
-            loss_cls = criterion(pred_logtis, target_cls)
-            accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
-
-            loss = loss_mask + 0.3 * loss_cls
+            y_preds = tta_model(image)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
-        wandb.log(
-            {
-                f"fold{fold}_valid_loss": loss_mask.item(),
-                f"fold{fold}_valid_cls_loss": loss_cls.item(),
-                f"fold{fold}_valid_acc": accs,
-            }
-        )
+        wandb.log({f"fold{fold}_valid_loss": loss.item()})
 
         # make a whole image prediction
         y_preds = torch.sigmoid(y_preds).to("cpu").detach().numpy()
@@ -1738,12 +1717,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     fragment_ids = list(DATA_DIR.rglob("test/*"))
     model = build_ensemble_model(cfg=cfg)
     if cfg.use_tta:
-        model = tta.SegmentationTTAWrapper(
-            model,
-            cfg.tta_transforms,
-            merge_mode="mean",
-            output_mask_key="pred_mask_logits",
-        )
+        model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
     for fragment_id, fragment_path in enumerate(fragment_ids, start=1):
         test_loader, xyxy_list = make_test_datast(
             cfg=cfg, fragment_id=fragment_path.stem
@@ -1774,7 +1748,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
             batch_size = images.size(0)
 
             with torch.inference_mode():
-                y_preds = model(images)["pred_mask_logits"]
+                y_preds = model(images).numpy()
 
             start_idx = step * cfg.batch_size
             end_idx = start_idx + batch_size

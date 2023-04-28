@@ -109,7 +109,7 @@ def seed_everything(seed: int = 42) -> None:
 class CFG:
     # ================= Global cfg =====================
     exp_name = (
-        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
+        "exp032_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
     )
     random_state = 42
     tile_size: int = 224
@@ -119,7 +119,7 @@ class CFG:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 10
+    epoch = 15
     batch_size = 8 * 2
     use_amp: bool = True
     patience = 5

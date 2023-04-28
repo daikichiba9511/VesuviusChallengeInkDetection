@@ -1,11 +1,15 @@
-"""exp032
+"""exp032_3
 
-- copy from exp021
+- copy from exp032
 - 2.5D segmentation
 
 DIFF:
 
 - CLS Headを追加する
+- mixupあげる
+- RandomResizedScale
+- Shapen
+
 
 Reference:
 [1]
@@ -109,7 +113,7 @@ def seed_everything(seed: int = 42) -> None:
 class CFG:
     # ================= Global cfg =====================
     exp_name = (
-        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
+        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
     )
     random_state = 42
     tile_size: int = 224
@@ -157,16 +161,18 @@ class CFG:
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 0.5
+    mixup_prob = 0.9
     mixup_alpha = 0.2
 
     train_compose = [
-        A.Resize(image_size[0], image_size[1]),
+        # A.Resize(image_size[0], image_size[1]),
+        A.RandomResizedCrop(height=image_size[0], width=image_size[1], scale=(0.8, 1.2)),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
+        A.Sharpen(p=0.75),
         A.ShiftScaleRotate(p=0.75),
         A.OneOf(
             [

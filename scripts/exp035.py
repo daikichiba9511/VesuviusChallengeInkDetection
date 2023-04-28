@@ -1,11 +1,11 @@
-"""exp032
+"""exp035
 
-- copy from exp021
+- copy from exp035
 - 2.5D segmentation
 
 DIFF:
 
-- CLS Headを追加する
+- in_chans=7, 表面方向にスライスを1枚追加
 
 Reference:
 [1]
@@ -108,9 +108,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = (
-        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
-    )
+    exp_name = "exp035_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -151,7 +149,7 @@ class CFG:
     # encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-    in_chans: int = 6
+    in_chans: int = 7
     # weights = "imagenet"
     weights = "advprop"
 
@@ -373,7 +371,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2
+    end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -577,11 +575,6 @@ class VCNet(nn.Module):
         weights: str | None = "imagenet",
     ) -> None:
         super().__init__()
-        aux_params = {
-            "classes": 1,
-            "pooling": "avg",
-            "dropout": 0.5,
-        }
         self.model = smp.create_model(
             arch=arch,
             encoder_name=encoder_name,
@@ -589,23 +582,12 @@ class VCNet(nn.Module):
             in_channels=in_chans,
             classes=num_classes,
             activation=None,
-            aux_params=aux_params,
         )
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """
-        Args:
-            x: (N, C, H, W)
-        Returns:
-            masks: (N, 1, H, W)
-            labels: (N, 1)
-        """
-        masks, labels = self.model(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output = self.model(x)
         # output = output.squeeze(-1)
-        return {
-            "pred_mask_logits": masks,
-            "pred_label_logits": labels,
-        }
+        return output
 
 
 def build_model(cfg: CFG) -> VCNet:
@@ -629,9 +611,9 @@ class EnsembleModel:
     def add_model(self, model: VCNet) -> None:
         self.models.append(model)
 
-    def __call__(self, x: torch.Tensor) -> np.ndarray:
-        outputs = [torch.sigmoid(model(x)).to("cpu").numpy() for model in self.models]
-        avg_preds = np.mean(outputs, axis=0)
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        outputs = [torch.sigmoid(model(x)).to("cpu") for model in self.models]
+        avg_preds = torch.mean(torch.stack(outputs), axis=0)
         return avg_preds
 
 
@@ -1061,23 +1043,6 @@ class AWP:
         self.backup_eps = {}
 
 
-def make_cls_label(mask: torch.Tensor) -> torch.Tensor:
-    """make classification label from mask
-
-    Args:
-        mask (torch.Tensor): mask
-
-    Returns:
-        torch.Tensor: classification label
-    """
-
-    # (labels.view(b, -1).sum(-1) > 0).float().view(b, 1)
-    batch_size = len(mask)
-    # shape: (N, 1)
-    target_cls = (mask.view(batch_size, -1).sum(-1) > 0).float().view(batch_size, 1)
-    return target_cls
-
-
 # ==========================================================
 # training function
 # ==========================================================
@@ -1112,18 +1077,13 @@ def train_per_epoch(
                 image, target, _, _ = mixup(image, target, alpha=cfg.mixup_alpha)
 
             image = image.to(cfg.device, non_blocking=True)
-            # (N, H, W)
-            target_mask = target.to(cfg.device, non_blocking=True)
+            target = target.to(cfg.device, non_blocking=True)
             batch_size = target.size(0)
-            target_cls = make_cls_label(target_mask)
 
             with autocast(device_type="cuda", enabled=cfg.use_amp):
-                pred = model(image)
-                pred_mask = pred["pred_mask_logits"]
-                pred_label = pred["pred_label_logits"]
-                loss_mask = criterion(pred_mask, target_mask)
-                loss_cls = criterion(pred_label, target_cls)
-                loss = loss_mask + 0.3 * loss_cls
+                outputs = model(image)
+                assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
+                loss = criterion(outputs, target)
 
             running_loss.update(value=loss.item(), n=batch_size)
 
@@ -1145,11 +1105,7 @@ def train_per_epoch(
             pbar.set_postfix({"epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
             learning_rate = optimizer.param_groups[0]["lr"]
             wandb.log(
-                {
-                    f"fold{fold}_train_loss": loss.item(),
-                    "learning_rate": learning_rate,
-                    f"fold{fold}_train_cls_loss": loss_cls.item(),
-                }
+                {f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate}
             )
     return running_loss.avg
 
@@ -1171,10 +1127,7 @@ def valid_per_epoch(
 
     if cfg.use_tta:
         tta_model = tta.SegmentationTTAWrapper(
-            model,
-            cfg.tta_transforms,
-            merge_mode="mean",
-            output_mask_key="pred_mask_logits",
+            model, cfg.tta_transforms, merge_mode="mean"
         )
     else:
         tta_model = model
@@ -1188,30 +1141,14 @@ def valid_per_epoch(
     ):
         image = image.to(cfg.device, non_blocking=True)
         target = target.to(cfg.device, non_blocking=True)
-        target_cls = make_cls_label(target)
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            # segm_logits: (N, 1, H, W)
-            y_preds = tta_model(image)["pred_mask_logits"]
-            loss_mask = criterion(y_preds, target)
-
-            # cls: (N, 1)
-            pred = model(image)
-            pred_logtis = pred["pred_label_logits"]
-            loss_cls = criterion(pred_logtis, target_cls)
-            accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
-
-            loss = loss_mask + 0.3 * loss_cls
+            y_preds = tta_model(image)
+            loss = criterion(y_preds, target)
 
         valid_losses.update(value=loss.item(), n=batch_size)
-        wandb.log(
-            {
-                f"fold{fold}_valid_loss": loss_mask.item(),
-                f"fold{fold}_valid_cls_loss": loss_cls.item(),
-                f"fold{fold}_valid_acc": accs,
-            }
-        )
+        wandb.log({f"fold{fold}_valid_loss": loss.item()})
 
         # make a whole image prediction
         y_preds = torch.sigmoid(y_preds).to("cpu").detach().numpy()
@@ -1738,12 +1675,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     fragment_ids = list(DATA_DIR.rglob("test/*"))
     model = build_ensemble_model(cfg=cfg)
     if cfg.use_tta:
-        model = tta.SegmentationTTAWrapper(
-            model,
-            cfg.tta_transforms,
-            merge_mode="mean",
-            output_mask_key="pred_mask_logits",
-        )
+        model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
     for fragment_id, fragment_path in enumerate(fragment_ids, start=1):
         test_loader, xyxy_list = make_test_datast(
             cfg=cfg, fragment_id=fragment_path.stem
@@ -1774,7 +1706,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
             batch_size = images.size(0)
 
             with torch.inference_mode():
-                y_preds = model(images)["pred_mask_logits"]
+                y_preds = model(images).numpy()
 
             start_idx = step * cfg.batch_size
             end_idx = start_idx + batch_size

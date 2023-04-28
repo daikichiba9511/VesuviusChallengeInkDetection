@@ -1,11 +1,16 @@
-"""exp032
+"""exp037
 
-- copy from exp021
+- copy from exp032_4
 - 2.5D segmentation
 
 DIFF:
 
 - CLS Headを追加する
+- mixupあげる
+- RandomResizedScale
+- Shapen
+- denoiseを試す
+
 
 Reference:
 [1]
@@ -45,6 +50,7 @@ from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
+from src.preprocess import denoise_image
 
 dbg = logger.debug
 
@@ -108,9 +114,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = (
-        "exp032_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head"
-    )
+    exp_name = "exp037_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -147,8 +151,8 @@ class CFG:
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
-    encoder_name = "timm-efficientnet-b1"
-    # encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name = "timm-efficientnet-b1"
+    encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
     in_chans: int = 6
@@ -157,16 +161,26 @@ class CFG:
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 0.5
+    mixup_prob = 0.9
     mixup_alpha = 0.2
 
+    iter_num = 75
+    fidelity = 150
+    mu = 1
+    sparsity_scale = 10
+    continuity_scale = 0.5
+
     train_compose = [
-        A.Resize(image_size[0], image_size[1]),
+        # A.Resize(image_size[0], image_size[1]),
+        A.RandomResizedCrop(
+            height=image_size[0], width=image_size[1], scale=(0.8, 1.2)
+        ),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
+        A.Sharpen(p=0.75),
         A.ShiftScaleRotate(p=0.75),
         A.OneOf(
             [
@@ -378,6 +392,14 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     for i in idxs:
         image = cv2.imread(
             str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0
+        )
+        image = denoise_image(
+            image,
+            iter_num=cfg.iter_num,
+            fidelity=cfg.fidelity,
+            sparsity_scale=cfg.sparsity_scale,
+            continuity_scale=cfg.continuity_scale,
+            mu=cfg.mu,
         )
 
         assert image.ndim == 2
