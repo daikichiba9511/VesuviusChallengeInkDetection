@@ -1537,7 +1537,7 @@ def train(cfg: CFG) -> None:
 
         criterion = get_loss(cfg=cfg)
         criterion_cls = nn.BCEWithLogitsLoss()
-        optimizer = get_optimizer(cfg=cfg, model=net)
+        optimizer = get_optimizer(cfg=cfg, model=net.model)
         scheduler = get_scheduler(
             cfg=cfg, optimizer=optimizer, step_per_epoch=len(train_loader)
         )
