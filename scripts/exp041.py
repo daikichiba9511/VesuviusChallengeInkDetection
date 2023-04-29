@@ -1268,7 +1268,7 @@ def valid_per_epoch(
 def get_optimizer(cfg: CFG, model: nn.Module) -> nn.optim.Optimizer:
     params = [
         {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
-        {"params": model.encoder.parameters(), "lr": cfg.decoder_lr},
+        {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
     ]
     optimizer = optim.AdamW(params=params, weight_decay=1e-6)
     return optimizer
