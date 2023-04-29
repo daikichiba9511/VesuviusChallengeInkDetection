@@ -119,7 +119,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 2
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 5
 
