@@ -1,11 +1,11 @@
-"""exp039
+"""exp040
 
 - copy from exp034
 - 2.5D segmentation
 
 DIFF:
 
-- SegFormer
+- PSPNet
 
 Reference:
 [1]
@@ -35,7 +35,6 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import transformers
 import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
@@ -109,7 +108,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp039_fold5_Segformer_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp040_fold5_PSPNet_effb1_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -156,7 +155,7 @@ class CFG:
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 0.5
+    mixup_prob = 1.0
     mixup_alpha = 0.2
 
     train_compose = [
@@ -576,25 +575,19 @@ class VCNet(nn.Module):
         weights: str | None = "imagenet",
     ) -> None:
         super().__init__()
-        # self.model = smp.create_model(
-        #     arch=arch,
-        #     encoder_name=encoder_name,
-        #     encoder_weights=weights,
-        #     in_channels=in_chans,
-        #     classes=num_classes,
-        #     activation=None,
-        # )
-        pretrain_model = "nvidia/mit-b0"
-        self.image_proc = transformers.AutoImageProcessor.from_pretrained(
-            pretrain_model
+        self.model = smp.create_model(
+            arch=arch,
+            encoder_name=encoder_name,
+            encoder_weights=weights,
+            in_channels=in_chans,
+            classes=num_classes,
+            activation=None,
         )
-        self.model = transformers.SegformerForSemanticSegmentation(pretrain_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        inputs = self.image_proc(x, return_tensors="pt")
-        output = self.model(**inputs)
-        logits = output.logits
-        return logits
+        output = self.model(x)
+        # output = output.squeeze(-1)
+        return output
 
 
 def build_model(cfg: CFG) -> VCNet:

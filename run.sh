@@ -23,3 +23,6 @@ WANDB_MODE=online poetry run python scripts/exp032_5.py
 # WANDB_MODE=online poetry run python scripts/exp037.py
 WANDB_MODE=online poetry run python scripts/exp032_6.py
 WANDB_MODE=online poetry run python scripts/exp038.py
+WANDB_MODE=online poetry run python scripts/exp034.py
+WANDB_MODE=online poetry run python scripts/exp039.py
+WANDB_MODE=online poetry run python scripts/exp040.py

@@ -108,7 +108,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp034_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "RE_exp034_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -117,8 +117,8 @@ class CFG:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 10
-    batch_size = 8 * 2
+    epoch = 30
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 5
 
@@ -145,17 +145,17 @@ class CFG:
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
-    encoder_name = "timm-efficientnet-b1"
+    encoder_name = "timm-efficientnet-b0"
     # encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-    in_chans: int = 6
+    in_chans: int = 7
     # weights = "imagenet"
     weights = "advprop"
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 0.5
+    mixup_prob = 1.0
     mixup_alpha = 0.2
 
     train_compose = [
@@ -371,7 +371,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2
+    end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -1603,7 +1603,7 @@ def read_image(cfg: CFG, fragment_id: str) -> np.ndarray:
     # idxs = range(65)
     mid = 65 // 2
     start = mid - CFG.in_chans // 2
-    end = mid + CFG.in_chans // 2
+    end = mid + CFG.in_chans // 2 + 1
     idxs = range(start, end)
 
     for i in tqdm(idxs):
