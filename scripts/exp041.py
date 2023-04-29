@@ -1229,7 +1229,10 @@ def valid_per_epoch(
 
     if cfg.use_tta:
         tta_model = tta.SegmentationTTAWrapper(
-            model, cfg.tta_transforms, merge_mode="mean"
+            model,
+            cfg.tta_transforms,
+            merge_mode="mean",
+            output_mask_key="pred_mask_logits",
         )
     else:
         tta_model = model
@@ -1242,12 +1245,23 @@ def valid_per_epoch(
         desc="Valid Per Epoch",
     ):
         image = image.to(cfg.device, non_blocking=True)
+        target_cls = make_cls_label(target)
+        target_cls.to(cfg.device, non_blocking=True)
         target = target.to(cfg.device, non_blocking=True)
         batch_size = target.size(0)
 
         with torch.inference_mode():
-            y_preds = tta_model(image)
-            loss = criterion(y_preds, target)
+            # segm_logits: (N, 1, H, W)
+            y_preds = tta_model(image)["pred_mask_logits"]
+            loss_mask = criterion(y_preds, target)
+
+            # cls: (N, 1)
+            pred = model(image)
+            pred_logtis = pred["pred_label_logits"]
+            loss_cls = criterion(pred_logtis, target_cls)
+            accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
+
+            loss = loss_mask + 0.3 * loss_cls
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log({f"fold{fold}_valid_loss": loss.item()})
