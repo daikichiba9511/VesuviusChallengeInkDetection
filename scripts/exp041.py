@@ -1,6 +1,6 @@
 """exp041
 
-- copy from exp021
+- copy from exp034
 - 2.5D segmentation
 
 DIFF:
@@ -39,6 +39,7 @@ import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
 from sklearn.metrics import roc_auc_score
+from timm.data.loader import PrefetchLoader
 from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
@@ -1498,6 +1499,8 @@ def get_train_valid_loader(
         num_workers=cfg.num_workers,
         drop_last=False,
     )
+    # train_loader = PrefetchLoader(train_loader)
+    # valid_loader = PrefetchLoader(train_loader)
     return train_loader, valid_loader
 
 
