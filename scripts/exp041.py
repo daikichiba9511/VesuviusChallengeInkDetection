@@ -1246,7 +1246,7 @@ def valid_per_epoch(
     ):
         image = image.to(cfg.device, non_blocking=True)
         target_cls = make_cls_label(target)
-        target_cls.to(cfg.device, non_blocking=True)
+        target_cls = target_cls.to(cfg.device, non_blocking=True)
         target = target.to(cfg.device, non_blocking=True)
         batch_size = target.size(0)
 
@@ -1258,13 +1258,18 @@ def valid_per_epoch(
             # cls: (N, 1)
             pred = model(image)
             pred_logtis = pred["pred_label_logits"]
-            loss_cls = criterion(pred_logtis, target_cls)
+            loss_cls = nn.BCEWithLogitsLoss()(pred_logtis, target_cls)
             accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
-
-            loss = loss_mask + 0.3 * loss_cls
+            loss = loss_mask + cfg.weight_cls * loss_cls
 
         valid_losses.update(value=loss.item(), n=batch_size)
-        wandb.log({f"fold{fold}_valid_loss": loss.item()})
+        wandb.log(
+            {
+                f"fold{fold}_valid_loss": loss.item(),
+                f"fold{fold}_valid_cls_loss": loss_cls.item(),
+                f"fold{fold}_valid_acc": accs,
+            }
+        )
 
         # make a whole image prediction
         y_preds = torch.sigmoid(y_preds).to("cpu").detach().numpy()
