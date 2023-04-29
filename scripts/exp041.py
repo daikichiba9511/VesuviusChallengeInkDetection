@@ -509,14 +509,14 @@ def get_train_valid_split(
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
 
 
-def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose:
+def get_alb_transforms(phase: str, cfg: CFG) -> A.Compose | tuple[A.Compose, A.Compose]:
     """
     Args:
         phase: {"train", "valid", "test"}
         cfg: 設定
     """
     if phase == "train":
-        return A.Compose(cfg.train_compose)
+        return A.Compose(cfg.train_compose), A.Compose(cfg.soft_train_compose)
     elif phase == "valid":
         return A.Compose(
             [
