@@ -113,7 +113,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp038_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
+    exp_name = "exp038_fold5_Unet++_seresnext101_32x4d_gradualwarm_mixup_tile224_slide74_cls_head_mixup0.9_randomresizedscale_shapen"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -122,8 +122,8 @@ class CFG:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 10
-    batch_size = 8 * 8
+    epoch = 15
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 5
 
@@ -150,13 +150,14 @@ class CFG:
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "se_resnext101_32x4d"
     # encoder_name = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
     in_chans: int = 6
-    # weights = "imagenet"
-    weights = "advprop"
+    weights = "imagenet"
+    # weights = "advprop"
 
     # ================= Data cfg =====================
     mixup = True
