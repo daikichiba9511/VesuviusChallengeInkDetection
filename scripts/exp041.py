@@ -1197,7 +1197,7 @@ def train_per_epoch(
                 # [1]
                 # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
                 # model.zero_grad()
-                # scaler.unscale_(optimizer)
+                scaler.unscale_(optimizer)
                 optimizer.zero_grad(set_to_none=True)
                 # Update Optimizer
                 scaler.step(optimizer)
@@ -1391,7 +1391,7 @@ def get_loss(cfg: CFG) -> nn.Module:
 
         def _loss(y_pred, y_true, alpha=cfg.weight_bce, beta=cfg.weight_focal):
             bce_loss = nn.BCEWithLogitsLoss()
-            focal_loss = smp.losses.FocalLoss(mode="binary", from_logits=True)
+            focal_loss = smp.losses.FocalLoss(mode="binary")
             lobasz_loss = smp.losses.LovaszLoss(mode="binary")
             return (
                 (alpha * bce_loss(y_pred, y_true))
