@@ -1193,7 +1193,7 @@ def valid_per_epoch(
 
         with torch.inference_mode():
             # segm_logits: (N, 1, H, W)
-            y_preds = tta_model(image)["pred_mask_logits"]
+            y_preds = tta_model(image)["pred_mask_logits"ａ]
             loss_mask = criterion(y_preds, target)
 
             # cls: (N, 1)
