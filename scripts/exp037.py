@@ -48,11 +48,15 @@ from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
+import cupy as cp
 
 import wandb
 from src.preprocess import denoise_image
 
 dbg = logger.debug
+
+# ページャブルメモリプールを無効にする
+# cp.cuda.set_allocator(None)
 
 # ssl._create_default_https_context = ssl._create_unverified_context
 # torchvision.disable_beta_transforms_warning()
@@ -373,6 +377,7 @@ def get_mask_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return image1_mask, image2_mask, image3_mask
 
 
+
 def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]:
     """画像とマスクを読み込む
 
@@ -393,15 +398,34 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
         image = cv2.imread(
             str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0
         )
-        image = denoise_image(
-            image,
-            iter_num=cfg.iter_num,
-            fidelity=cfg.fidelity,
-            sparsity_scale=cfg.sparsity_scale,
-            continuity_scale=cfg.continuity_scale,
-            mu=cfg.mu,
-        )
-
+        # h = image.shape[0]
+        # step = h // 2
+        # h_starts = np.arange(0, h + 1, step)
+        # if h not in h_starts:
+        #     h_start = np.append(h_starts, h)
+        # for i in range(len(h_starts) - 1):
+        #     h_start = h_starts[i]
+        #     h_end = h_starts[i + 1]
+        #     # メモリプールオブジェクトを作成
+        #     memory_pool = cp.cuda.memory.MemoryPool()
+        #
+        #     # メモリプールをカレントデバイスのデフォルトメモリプールに設定
+        #     cp.cuda.memory.set_allocator(memory_pool.malloc)
+        #     image_i = denoise_image(
+        #         cp.array(image[h_start:h_end, :], dtype=np.float16),
+        #         iter_num=cfg.iter_num,
+        #         fidelity=cfg.fidelity,
+        #         sparsity_scale=cfg.sparsity_scale,
+        #         continuity_scale=cfg.continuity_scale,
+        #         mu=cfg.mu,
+        #     )
+        #     image_i = cp.asnumpy(image_i).astype(np.float32)
+        #     # メモリプールのすべてのブロックを解放
+        #     memory_pool.free_all_blocks()
+        #
+        #     assert image[h_start: h_end, :].shape == image_i.shape
+        #     image[h_start: h_end, :] = image_i
+        #
         assert image.ndim == 2
 
         pad0 = cfg.tile_size - image.shape[0] % cfg.tile_size
@@ -494,11 +518,43 @@ def get_train_valid_split(
                     )  # fold4
                     or (fragment_id == 3 and valid_id == 5)  # fold5
                 ):
-                    valid_images.append(image[y1:y2, x1:x2])
+                    image_slice = image[y1:y2, x1:x2]
+                    denoised = np.zeros(image_slice.shape)
+                    for c in range(cfg.in_chans):
+                        image_i = cp.asnumpy(
+                            denoise_image(
+                                cp.array(image_slice[:, :, c], dtype=np.float32),
+                                iter_num=cfg.iter_num,
+                                fidelity=cfg.fidelity,
+                                sparsity_scale=cfg.sparsity_scale,
+                                continuity_scale=cfg.continuity_scale,
+                                mu=cfg.mu,
+                            )
+                        ).astype(np.float32)
+                        denoised[:, :, c] = image_i
+                    assert denoised.ndim == 3 and denoised.shape[2] == cfg.in_chans
+                    valid_images.append(denoised)
                     valid_masks.append(mask[y1:y2, x1:x2, None])
                     valid_xyxys.append([x1, y1, x2, y2])
                 else:
-                    train_images.append(image[y1:y2, x1:x2])
+                    image_slice = image[y1:y2, x1:x2]
+                    denoised = np.zeros(image_slice.shape)
+                    for c in range(cfg.in_chans):
+                        image_i = cp.asnumpy(
+                            denoise_image(
+                                cp.array(image_slice[:, :, c], dtype=np.float32),
+                                iter_num=cfg.iter_num,
+                                fidelity=cfg.fidelity,
+                                sparsity_scale=cfg.sparsity_scale,
+                                continuity_scale=cfg.continuity_scale,
+                                mu=cfg.mu,
+                            ),
+                            dtype=np.float32
+                        ).astype(np.float32)
+                        denoised[:, :, c] = image_i
+                    assert denoised.ndim == 3 and denoised.shape[2] == cfg.in_chans
+
+                    train_images.append(denoised)
                     train_masks.append(mask[y1:y2, x1:x2, None])
 
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
