@@ -1197,7 +1197,7 @@ def train_per_epoch(
                 # [1]
                 # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
                 # model.zero_grad()
-                scaler.unscale_(optimizer)
+                scalejjr.unscale_(optimizer)
                 optimizer.zero_grad(set_to_none=True)
                 # Update Optimizer
                 scaler.step(optimizer)
