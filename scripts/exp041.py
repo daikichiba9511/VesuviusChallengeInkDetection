@@ -1378,7 +1378,7 @@ def get_loss(cfg: CFG) -> nn.Module:
         def _loss(y_pred, y_true, alpha=cfg.weight_bce, beta=cfg.weight_focal):
             bce_loss = nn.BCEWithLogitsLoss()
             focal_loss = smp.losses.FocalLoss(mode="binary", from_logits=True)
-            lobasz_loss = smp.losses.LovaszLoss(mode="binary", from_logits=True)
+            lobasz_loss = smp.losses.LovaszLoss(mode="binary")
             return (
                 (alpha * bce_loss(y_pred, y_true))
                 + (beta * focal_loss(y_pred, y_true))
