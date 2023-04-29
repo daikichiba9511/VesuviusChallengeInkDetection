@@ -699,25 +699,25 @@ test = ["Pillow", "matplotlib", "pytest"]
 test-no-images = ["pytest"]
 
 [[package]]
-name = "cupy-cuda12x"
+name = "cupy-cuda11x"
 version = "12.0.0"
 description = "CuPy: NumPy & SciPy for GPU"
 category = "main"
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "cupy_cuda12x-12.0.0-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:9262ff11d1805b2c786ba6779c3700d3b11825a2aadbc028955aa622604b06aa"},
-    {file = "cupy_cuda12x-12.0.0-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:b6b75b21b623ef8cda312642fa95a7af532ecf0d289cf37084d3e12c52790f80"},
-    {file = "cupy_cuda12x-12.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:bef9a6eb60b581491c5585ac34b42012f84d69c55eb9fac68d45a89bbc4f9279"},
-    {file = "cupy_cuda12x-12.0.0-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:c91dc53a903fb057fa4ce216c1c5d7cbc6e5821acd2194b3600ff7abdd7e9437"},
-    {file = "cupy_cuda12x-12.0.0-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:88725d8202c258b51852702fa16426fced1441a3d9873f27b1cafde7f64d5fa6"},
-    {file = "cupy_cuda12x-12.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:cd8dcb4aa1ee0369d9d825ae42eab43d1419db4940415e1696ea05490ed7b5a9"},
-    {file = "cupy_cuda12x-12.0.0-cp38-cp38-manylinux2014_aarch64.whl", hash = "sha256:3cb49982518103e0303a98f064b8d5a4b05f08322f78b46127f71b2d7853caac"},
-    {file = "cupy_cuda12x-12.0.0-cp38-cp38-manylinux2014_x86_64.whl", hash = "sha256:0a9a6f0fdd06a66a4b04470cad9a503f5e7dc27432c89ee03e3be2f3279e4cae"},
-    {file = "cupy_cuda12x-12.0.0-cp38-cp38-win_amd64.whl", hash = "sha256:7fae713a6ffcfb69885a603596a02ea8594eaf983fdb4e79027a3efe713a1814"},
-    {file = "cupy_cuda12x-12.0.0-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:b0271a10d822755994cc452953db2d76a9b5c52ed6af430941b19f5b96ab2e17"},
-    {file = "cupy_cuda12x-12.0.0-cp39-cp39-manylinux2014_x86_64.whl", hash = "sha256:d6c6be41d6d75e7f6bbd82f74e4006e9ff31da0d31e1cce6e054372f81e8bc5a"},
-    {file = "cupy_cuda12x-12.0.0-cp39-cp39-win_amd64.whl", hash = "sha256:e8fd2632f5dea71a6c03f7b059029f9db4eb38a1431dbaa7f27d1350c8f4da46"},
+    {file = "cupy_cuda11x-12.0.0-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:d6a6271b15fc88d94837fdbac7a1bbad60d2d3d0fe16db983bcaa7a03d93a731"},
+    {file = "cupy_cuda11x-12.0.0-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:27cec483f96b6c1ea1cb2a33deb600a0d6280e398d214ea0ab9b4ba95639268e"},
+    {file = "cupy_cuda11x-12.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:8de63e8f3ae3820ba0163d4a29772cf874f88e8a1affafaa18c027838bd46e1b"},
+    {file = "cupy_cuda11x-12.0.0-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:84faaaac6c4039dad71da5ecf45bd7e2f63512121bfc83f1c7efef1cbd167f18"},
+    {file = "cupy_cuda11x-12.0.0-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:fce5e54959b1b8c044bea4bc80227e1e23ca670b73cab3b4bcefe9969e75c5cc"},
+    {file = "cupy_cuda11x-12.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:e31d7e7aa38915d60d85bfeabe96a286b546261dc3cf61fb00896a1a42672483"},
+    {file = "cupy_cuda11x-12.0.0-cp38-cp38-manylinux2014_aarch64.whl", hash = "sha256:0a5716df545a7c125ca48f6f9a6b756ea81060c0339ad54a9e468a6d95afde4a"},
+    {file = "cupy_cuda11x-12.0.0-cp38-cp38-manylinux2014_x86_64.whl", hash = "sha256:cd29ae483b8482075bbb5dcd3d5a423c98636727912b8b7dd005b07f289eaaca"},
+    {file = "cupy_cuda11x-12.0.0-cp38-cp38-win_amd64.whl", hash = "sha256:749686155161a136805fda7182106cc3e69f3eb6a23c9d05c1a74db9344e5176"},
+    {file = "cupy_cuda11x-12.0.0-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:e0e0e4942c18e03947fd0e5894cd94ae8714619fe1f687af2d408adba83dc748"},
+    {file = "cupy_cuda11x-12.0.0-cp39-cp39-manylinux2014_x86_64.whl", hash = "sha256:21170213c578027269be3bc1dac8cc0f080a112e165c158831a03978840122e3"},
+    {file = "cupy_cuda11x-12.0.0-cp39-cp39-win_amd64.whl", hash = "sha256:a1633da76ab172288b2a51cc55d7b64e4d8d07f3a1cc4e9b9b2307e9750dec1c"},
 ]
 
 [package.dependencies]
@@ -4116,6 +4116,10 @@ category = "main"
 optional = false
 python-versions = ">=3.8.0"
 files = [
+    {file = "torch-2.0.0-1-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:c9090bda7d2eeeecd74f51b721420dbeb44f838d4536cc1b284e879417e3064a"},
+    {file = "torch-2.0.0-1-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:bd42db2a48a20574d2c33489e120e9f32789c4dc13c514b0c44272972d14a2d7"},
+    {file = "torch-2.0.0-1-cp38-cp38-manylinux2014_aarch64.whl", hash = "sha256:8969aa8375bcbc0c2993e7ede0a7f889df9515f18b9b548433f412affed478d9"},
+    {file = "torch-2.0.0-1-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:ab2da16567cb55b67ae39e32d520d68ec736191d88ac79526ca5874754c32203"},
     {file = "torch-2.0.0-cp310-cp310-manylinux1_x86_64.whl", hash = "sha256:7a9319a67294ef02459a19738bbfa8727bb5307b822dadd708bc2ccf6c901aca"},
     {file = "torch-2.0.0-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:9f01fe1f6263f31bd04e1757946fd63ad531ae37f28bb2dbf66f5c826ee089f4"},
     {file = "torch-2.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:527f4ae68df7b8301ee6b1158ca56350282ea633686537b30dbb5d7b4a52622a"},
@@ -4171,18 +4175,22 @@ files = [
     {file = "torchvision-0.15.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:bc10d48e9a60d006d0c1b48dea87f1ec9b63d856737d592f7c5c44cd87f3f4b7"},
     {file = "torchvision-0.15.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:3708d3410fdcaf6280e358cda9de2a4ab06cc0b4c0fd9aeeac550ec2563a887e"},
     {file = "torchvision-0.15.1-cp310-cp310-manylinux1_x86_64.whl", hash = "sha256:d4de10c837f1493c1c54344388e300a06c96914c6cc55fcb2527c21f2f010bbd"},
+    {file = "torchvision-0.15.1-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:b82fcc5abc9b5c96495c76596a1573025cc1e09d97d2d6fda717c44b9ca45881"},
     {file = "torchvision-0.15.1-cp310-cp310-win_amd64.whl", hash = "sha256:c84e97d8cc4fe167d87adad0a2a6424cff90544365545b20669bc50e6ea46875"},
     {file = "torchvision-0.15.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:97b90eb3b7333a31d049c4ccfd1064361e8491874959d38f466af64d67418cef"},
     {file = "torchvision-0.15.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6b60e1c839ae2a071befbba69b17468d67feafdf576e90ff9645bfbee998de17"},
     {file = "torchvision-0.15.1-cp311-cp311-manylinux1_x86_64.whl", hash = "sha256:13f71a3372d9168b01481a754ebaa171207f3dc455bf2fd86906c69222443738"},
+    {file = "torchvision-0.15.1-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:b2e8394726009090b40f6cc3a95cc878cc011dfac3d8e7a6060c79213d360880"},
     {file = "torchvision-0.15.1-cp311-cp311-win_amd64.whl", hash = "sha256:2852f501189483187ce9eb0ccd01b3f4f0918d29057e4a18b3cce8dad9a8a964"},
     {file = "torchvision-0.15.1-cp38-cp38-macosx_10_9_x86_64.whl", hash = "sha256:e5861baaeea87d19b6fd7d131e11a4a6bd17be14234c490a259bb360775e9520"},
     {file = "torchvision-0.15.1-cp38-cp38-macosx_11_0_arm64.whl", hash = "sha256:e714f362b9d8217cf4d68509b679ebc9ddf128cfe80f6c1def8e3f8a18466e75"},
     {file = "torchvision-0.15.1-cp38-cp38-manylinux1_x86_64.whl", hash = "sha256:43624accad1e47f16824be4db37ad678dd89326ad90b69c9c6363eeb22b9467e"},
+    {file = "torchvision-0.15.1-cp38-cp38-manylinux2014_aarch64.whl", hash = "sha256:7fe9b0cd3311b0db9e6d45ffab594ced06418fa4e2aa15eb2e60d55e5c51135c"},
     {file = "torchvision-0.15.1-cp38-cp38-win_amd64.whl", hash = "sha256:b45324ea4911a23a4b00b5a15cdbe36d47f93137206dab9f8c606d81b69dd3a7"},
     {file = "torchvision-0.15.1-cp39-cp39-macosx_10_9_x86_64.whl", hash = "sha256:1dfdec7c7df967330bba3341a781e0c047d4e0163e67164a9918500362bf7d91"},
     {file = "torchvision-0.15.1-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:c153710186cec0338d4fff411459a57ddbc8504436123ca73b3f0bdc26ff918c"},
     {file = "torchvision-0.15.1-cp39-cp39-manylinux1_x86_64.whl", hash = "sha256:ff4e650aa601f32ab97bce06704868dd2baad69ca4d454fa1f0012a51199f2bc"},
+    {file = "torchvision-0.15.1-cp39-cp39-manylinux2014_aarch64.whl", hash = "sha256:e9b4bb2a15849391df0415d2f76dd36e6528e4253f7b69322b7a0d682535544b"},
     {file = "torchvision-0.15.1-cp39-cp39-win_amd64.whl", hash = "sha256:21e6beb69e77ef6575c4fdd0ab332b96e8a7f144eee0d333acff469c827a4b5e"},
 ]
 
@@ -4329,6 +4337,15 @@ category = "main"
 optional = false
 python-versions = "*"
 files = [
+    {file = "triton-2.0.0-1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:38806ee9663f4b0f7cd64790e96c579374089e58f49aac4a6608121aa55e2505"},
+    {file = "triton-2.0.0-1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:226941c7b8595219ddef59a1fdb821e8c744289a132415ddd584facedeb475b1"},
+    {file = "triton-2.0.0-1-cp36-cp36m-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4c9fc8c89874bc48eb7e7b2107a9b8d2c0bf139778637be5bfccb09191685cfd"},
+    {file = "triton-2.0.0-1-cp37-cp37m-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:d2684b6a60b9f174f447f36f933e9a45f31db96cb723723ecd2dcfd1c57b778b"},
+    {file = "triton-2.0.0-1-cp38-cp38-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:9d4978298b74fcf59a75fe71e535c092b023088933b2f1df933ec32615e4beef"},
+    {file = "triton-2.0.0-1-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:74f118c12b437fb2ca25e1a04759173b517582fcf4c7be11913316c764213656"},
+    {file = "triton-2.0.0-1-pp37-pypy37_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:9618815a8da1d9157514f08f855d9e9ff92e329cd81c0305003eb9ec25cc5add"},
+    {file = "triton-2.0.0-1-pp38-pypy38_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1aca3303629cd3136375b82cb9921727f804e47ebee27b2677fef23005c3851a"},
+    {file = "triton-2.0.0-1-pp39-pypy39_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e3e13aa8b527c9b642e3a9defcc0fbd8ffbe1c80d8ac8c15a01692478dc64d8a"},
     {file = "triton-2.0.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8f05a7e64e4ca0565535e3d5d3405d7e49f9d308505bb7773d21fb26a4c008c2"},
     {file = "triton-2.0.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bb4b99ca3c6844066e516658541d876c28a5f6e3a852286bbc97ad57134827fd"},
     {file = "triton-2.0.0-cp36-cp36m-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:47b4d70dc92fb40af553b4460492c31dc7d3a114a979ffb7a5cdedb7eb546c08"},
@@ -4664,4 +4681,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "6609b47acc8e0310f49c84421985ce2e077500b366f30bd8bde38837cab39376"
+content-hash = "f9009ee2724442e1a9b64c612ef8811eb298a6c87f2a451ff810ddb76fa8b039"
