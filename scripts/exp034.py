@@ -139,8 +139,8 @@ class CFG:
     # adv_eps = 3
     # adv_step = 1
 
-    # ================= Test cfg =====================
-    use_tta = True
+    # ================= Train cfg =====================
+    grad_accum = 1
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
@@ -1084,23 +1084,27 @@ def train_per_epoch(
                 outputs = model(image)
                 assert outputs.shape == target.shape, f"{outputs.shape}, {target.shape}"
                 loss = criterion(outputs, target)
+                loss /= cfg.grad_accum
 
             running_loss.update(value=loss.item(), n=batch_size)
-
             scaler.scale(loss).backward()
+
             # awp.attack_backward(image, target, step)
-            scaler.unscale_(optimizer)
+
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), cfg.max_grad_norm
             )
-            scaler.step(optimizer)
-            scaler.update()
-            # Refs:
-            # [1]
-            # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
-            # model.zero_grad()
-            optimizer.zero_grad(set_to_none=True)
-            scheduler.step()
+            if ((step + 1) % cfg.grad_accum == 0) or (step + 1 == len(train_loader)):
+                # Refs:
+                # [1]
+                # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
+                # model.zero_grad()
+                # scaler.unscale_(optimizer)
+                optimizer.zero_grad(set_to_none=True)
+                # Update Optimizer
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
 
             pbar.set_postfix({"epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
             learning_rate = optimizer.param_groups[0]["lr"]
