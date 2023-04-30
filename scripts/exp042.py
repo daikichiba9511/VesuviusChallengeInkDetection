@@ -156,7 +156,7 @@ class CFG:
     # loss weights
     # weight_bce = 0.5
     # weight_focal = 0.3
-    weight_cls = 0.3
+    weight_cls = 0.0
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
@@ -607,10 +607,13 @@ class VCDataset(Dataset):
             if self.phase == "train":
                 hard_augmented = self.transform_fn(image=image, mask=mask)
                 soft_augmented = self.soft_transform_fn(image=image, mask=mask)
+
                 hard_image = hard_augmented["image"]
                 hard_mask = hard_augmented["mask"]
+
                 soft_image = soft_augmented["image"]
                 soft_mask = soft_augmented["mask"]
+
                 return hard_image, hard_mask, soft_image, soft_mask
 
             else:
@@ -1183,7 +1186,7 @@ def train_per_epoch(
                 pred_label = outputs["pred_label_logits"]
                 loss_mask = criterion(pred_mask, target)
                 loss_cls = criterion_cls(pred_label, target_cls)
-                loss = loss_mask + cfg.weight_cls * loss_cls
+                loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss /= cfg.grad_accum
 
             running_loss.update(value=loss.item(), n=batch_size)
@@ -1195,17 +1198,13 @@ def train_per_epoch(
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), cfg.max_grad_norm
             )
-            if ((step + 1) % cfg.grad_accum == 0) or (step + 1 == len(train_loader)):
-                # Refs:
-                # [1]
-                # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html#use-parameter-grad-none-instead-of-model-zero-grad-or-optimizer-zero-grad
-                # model.zero_grad()
-                scaler.unscale_(optimizer)
-                optimizer.zero_grad(set_to_none=True)
-                # Update Optimizer
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
+            scaler.unscale_(optimizer)
+
+            scaler.step(optimizer)
+            scaler.update()
+
+            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
 
             pbar.set_postfix(
                 {"fold": f"{fold}", "epoch": f"{epoch}", "loss": f"{loss.item():.4f}"}
@@ -1265,7 +1264,7 @@ def valid_per_epoch(
             pred_logtis = pred["pred_label_logits"]
             loss_cls = nn.BCEWithLogitsLoss()(pred_logtis, target_cls)
             accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
-            loss = loss_mask + cfg.weight_cls * loss_cls
+            loss = loss_mask + (cfg.weight_cls * loss_cls)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log(
