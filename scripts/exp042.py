@@ -1172,8 +1172,8 @@ def train_per_epoch(
                 image = soft_image.to(cfg.device, non_blocking=True)
                 target = soft_mask.to(cfg.device, non_blocking=True)
 
-            image = image.to(cfg.device, non_blocking=True)
-            target = target.to(cfg.device, non_blocking=True)
+            # image = image.to(cfg.device, non_blocking=True)
+            # target = target.to(cfg.device, non_blocking=True)
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
 
@@ -1207,7 +1207,9 @@ def train_per_epoch(
                 scaler.update()
                 scheduler.step()
 
-            pbar.set_postfix({"fold": f"{fold}", "epoch": f"{epoch}", "loss": f"{loss.item():.4f}"})
+            pbar.set_postfix(
+                {"fold": f"{fold}", "epoch": f"{epoch}", "loss": f"{loss.item():.4f}"}
+            )
             learning_rate = optimizer.param_groups[0]["lr"]
             wandb.log(
                 {f"fold{fold}_train_loss": loss.item(), "learning_rate": learning_rate}
@@ -1351,9 +1353,9 @@ def get_scheduler(
         return scheduler
     if cfg.scheduler == "TwoCyclicLR":
         scheduler = optim.lr_scheduler.CyclicLR(
-           optimizer=optimizer,
-           base_lr=cfg.lr
-           max_lr=cfg.max_lr,
+            optimizer=optimizer,
+            base_lr=cfg.lr,
+            max_lr=cfg.max_lr,
         )
 
     if cfg.scheduler == "GradualWarmupScheduler":

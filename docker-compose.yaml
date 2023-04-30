@@ -19,7 +19,7 @@ services:
               capabilities: [ utility, compute, video ]
     volumes:
       - .:/workspace/working
-      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOME}/.ssh:/root/.ssh
       - ${HOME}/.kaggle:/root/.kaggle
-      - ${HOME}/.gitconfig:${HOME}/.gitconfig:ro
-      - ${HOME}/.config/git/ignore:${HOME}/.config/git/ignore:ro
+      - ${HOME}/.gitconfig:${HOME}/.gitconfig
+      - ${HOME}/.config/git/ignore:${HOME}/.config/git/ignore
