@@ -1,11 +1,12 @@
-"""exp041
+"""exp042
 
-- copy from exp034
+- copy from exp041
 - 2.5D segmentation
 
 DIFF:
 
-- encoder lrとdecoder lrを分ける
+- BCEWithLogitsLoss
+- RandomResizedCrop
 
 Reference:
 [1]
@@ -109,7 +110,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp041_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp042_fold5_Unet++_effb1_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -147,20 +148,20 @@ class CFG:
     grad_accum = 1
 
     # ================= Loss cfg =====================
-    # loss = "BCEWithLogitsLoss"
+    loss = "BCEWithLogitsLoss"
     # loss = "BCETverskyLoss"
     # loss = "BCEDiceLoss"
-    loss = "BCEFocalLovaszLoss"
+    # loss = "BCEFocalLovaszLoss"
 
     # loss weights
-    weight_bce = 0.5
-    weight_focal = 0.3
+    # weight_bce = 0.5
+    # weight_focal = 0.3
     weight_cls = 0.3
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # encoder_name: str = "se_resnext50_32x4d"
-    encoder_name = "timm-efficientnet-b0"
+    encoder_name = "timm-efficientnet-b1"
     # encoder_name: str = "timm-efficientnet-b7"
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
@@ -180,7 +181,8 @@ class CFG:
     mixup_alpha = 0.2
 
     train_compose = [
-        A.Resize(image_size[0], image_size[1]),
+        # A.Resize(image_size[0], image_size[1]),
+        A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
