@@ -1,12 +1,11 @@
-"""exp042
+"""exp044
 
-- copy from exp041
+- copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- classification -> segmentation
 
 Reference:
 [1]
@@ -113,7 +112,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp048_fold5_Unet++_effb4_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -124,7 +123,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 4
+    batch_size = 8 * 8
     use_amp: bool = True
     patience = 10
 
@@ -139,7 +138,7 @@ class CFG:
     decoder_lr = 5e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 1e-5
+    weight_decay = 5e-5
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -175,8 +174,9 @@ class CFG:
     max_grad_norm = 1000.0
 
     # AWP params
-    start_awp = epoch - 5
-    start_epoch = 10
+    start_awp_epoch = 7
+    start_awp = epoch - start_awp_epoch
+    start_epoch = epoch - start_awp_epoch
     # adv_lr = 1e-6
     adv_lr = 1e-5
     adv_eps = 3
@@ -198,7 +198,7 @@ class CFG:
 
     # loss weights
     weight_bce = 0.5
-    weight_focal = 0.0
+    weight_focal = 0.1
     # weight_cls = 0.05
     # weight_cls = 0.01
     weight_cls = 0.1
@@ -208,7 +208,9 @@ class CFG:
     # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
+    encoder_name: str = "timm-efficientnet-b4"
+
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
@@ -280,6 +282,8 @@ class CFG:
             # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
         ]
     )
+    # if label_logits < cls_threshold, label = 0
+    cls_threshold = 0.75
 
 
 # ===============================================================
@@ -1354,6 +1358,9 @@ def valid_per_epoch(
         for i, (x1, y1, x2, y2) in enumerate(valid_xyxys[start_idx:end_idx]):
             mask_preds[y1:y2, x1:x2] += y_preds[i].squeeze(0)
             mask_count[y1:y2, x1:x2] += np.ones((cfg.tile_size, cfg.tile_size))
+            cls_logits = pred_logtis[i].item()
+            if cls_logits < cfg.cls_threshold:
+                mask_preds[y1:y2, x1:x2] = np.zeros((cfg.tile_size, cfg.tile_size))
 
     logger.info(f"mask_count_min: {mask_count.min()}")
     mask_preds /= mask_count
@@ -1736,6 +1743,8 @@ def train(cfg: CFG) -> None:
                 + f"best dice: {best_dice} best th: {best_th}"
             )
             if epoch > cfg.start_awp:
+                if not use_awp:
+                    logger.info(f"Start using awp at epoch {epoch}")
                 use_awp = True
 
             if score > best_score:

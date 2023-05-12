@@ -1,12 +1,11 @@
-"""exp042
+"""exp043
 
-- copy from exp041
+- copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- 2-stage-training
 
 Reference:
 [1]
@@ -49,7 +48,6 @@ from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
-from src.augmentations import cutmix
 
 dbg = logger.debug
 
@@ -113,7 +111,7 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp043_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -126,7 +124,10 @@ class CFG:
     epoch = 15
     batch_size = 8 * 4
     use_amp: bool = True
-    patience = 10
+    patience = 5
+
+    two_stage_train = False
+    """1 stage目は普通に学習、2-stage目はtarget_cls=1のラベルのみ学習する"""
 
     optimizer = "AdamW"
     # optimizer = "RAdam"
@@ -170,21 +171,19 @@ class CFG:
     # max_lr = 1e-4
 
     # GradualWarmupSchedulerの設定
-    T_max = 4
+    T_max = epoch // 2 + 1
 
     max_grad_norm = 1000.0
 
     # AWP params
-    start_awp = epoch - 5
-    start_epoch = 10
-    # adv_lr = 1e-6
-    adv_lr = 1e-5
-    adv_eps = 3
-    adv_step = 1
+    # start_epoch = 10
+    # adv_lr = 1e-5
+    # adv_eps = 3
+    # adv_step = 1
 
     # when to start soft augmentation
     # if epoch < start_soft_aug_epoch, use hard augmentation
-    start_soft_aug_epoch: int = epoch
+    start_soft_aug_epoch: int = epoch - 5
 
     # num step of grad accumulation
     grad_accum = 4
@@ -197,15 +196,14 @@ class CFG:
     loss = "BCEFocalDiceLoss"
 
     # loss weights
-    weight_bce = 0.5
-    weight_focal = 0.0
+    weight_bce = 0.75
+    weight_focal = 0.05
     # weight_cls = 0.05
     # weight_cls = 0.01
-    weight_cls = 0.1
+    weight_cls = 0.005
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
-    # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
     encoder_name: str = "timm-efficientnet-b7"
@@ -218,17 +216,13 @@ class CFG:
     aux_params = {
         "classes": 1,
         "pooling": "avg",
-        "dropout": 0.8,
+        "dropout": 0.5,
     }
 
     # ================= Data cfg =====================
     mixup = True
     mixup_prob = 1.0
     mixup_alpha = 0.2
-
-    cutmix = False
-    cutmix_prob = 1.0
-    cutmix_alpha = 0.2
 
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
@@ -556,8 +550,16 @@ def get_train_valid_split(
                     valid_masks.append(mask[y1:y2, x1:x2, None])
                     valid_xyxys.append([x1, y1, x2, y2])
                 else:
-                    train_images.append(image[y1:y2, x1:x2])
-                    train_masks.append(mask[y1:y2, x1:x2, None])
+                    if cfg.two_stage_train:
+                        slice_mask = mask[y1:y2, x1:x2]
+                        if slice_mask.sum() > 0:
+                            continue
+                        train_images.append(image[y1:y2, x1:x2])
+                        train_masks.append(mask[y1:y2, x1:x2, None])
+
+                    else:
+                        train_images.append(image[y1:y2, x1:x2])
+                        train_masks.append(mask[y1:y2, x1:x2, None])
 
     return train_images, train_masks, valid_images, valid_masks, valid_xyxys
 
@@ -1112,7 +1114,7 @@ class AWP:
         for i in range(self.adv_step):
             self._attack_step()
             with autocast(device_type="cuda", enabled=self.scaler is not None):
-                logits = self.model(x)["pred_mask_logits"]
+                logits = self.model(x)
                 adv_loss = self.criterion(logits, y)
                 adv_loss = adv_loss.mean()
             self.optimizer.zero_grad()
@@ -1196,18 +1198,17 @@ def train_per_epoch(
     scheduler,
     epoch: int,
     criterion_cls,
-    use_awp: bool = False,
 ) -> float:
-    awp = AWP(
-        model=model,
-        optimizer=optimizer,
-        criterion=criterion,
-        scaler=scaler,
-        adv_lr=cfg.adv_lr,
-        adv_eps=cfg.adv_eps,
-        start_epoch=cfg.start_epoch,
-        adv_step=cfg.adv_step,
-    )
+    # awp = AWP(
+    #     model=model,
+    #     optimizer=optimizer,
+    #     criterion=criterion,
+    #     scaler=scaler,
+    #     adv_lr=cfg.adv_lr,
+    #     adv_eps=cfg.adv_eps,
+    #     start_epoch=cfg.start_epoch,
+    #     adv_step=cfg.adv_step,
+    # )
     running_loss = AverageMeter(name="train_loss")
     # train_losses = []
     with tqdm(
@@ -1218,9 +1219,6 @@ def train_per_epoch(
 
             if cfg.mixup and np.random.rand() <= cfg.mixup_prob:
                 image, target, _, _ = mixup(image, target, alpha=cfg.mixup_alpha)
-
-            if cfg.cutmix and np.random.rand() <= cfg.cutmix_prob:
-                image, target, _, _ = cutmix(image, target, alpha=cfg.cutmix_alpha)
 
             if epoch < cfg.start_soft_aug_epoch:
                 image = image.to(cfg.device, non_blocking=True)
@@ -1249,12 +1247,10 @@ def train_per_epoch(
             # Ref:
             # https://pytorch.org/docs/stable/notes/amp_examples.html#working-with-multiple-models-losses-and-optimizers
             scaler.scale(loss).backward()
-
             # scaler.scale(loss_mask).backward(retain_graph=True)
             # scaler.scale(loss_cls).backward()
 
-            if use_awp:
-                awp.attack_backward(image, target, step)
+            # awp.attack_backward(image, target, step)
 
             if (step + 1) % cfg.grad_accum == 0:
                 # unscale -> clip
@@ -1660,6 +1656,9 @@ def train(cfg: CFG) -> None:
             weights=cfg.weights,
             aux_params=cfg.aux_params,
         )
+        if cfg.two_stage_train and cfg.model_weight_path:
+            net.load_state_dict(torch.load(cfg.model_weight_path))
+
         net = net.to(device=cfg.device, non_blocking=True)
 
         train_loader, valid_loader = get_train_valid_loader(
@@ -1687,8 +1686,6 @@ def train(cfg: CFG) -> None:
 
         best_score = 0
 
-        use_awp = False
-
         for epoch in range(cfg.epoch):
             train_avg_loss = train_per_epoch(
                 cfg=cfg,
@@ -1701,7 +1698,6 @@ def train(cfg: CFG) -> None:
                 fold=fold,
                 epoch=epoch,
                 criterion_cls=criterion_cls,
-                use_awp=use_awp,
             )
             valid_avg_loss, mask_preds = valid_per_epoch(
                 cfg=cfg,
@@ -1735,8 +1731,6 @@ def train(cfg: CFG) -> None:
                 f"Epoch {epoch} - train_avg_loss: {train_avg_loss} valid_avg_loss: {valid_avg_loss}"
                 + f"best dice: {best_dice} best th: {best_th}"
             )
-            if epoch > cfg.start_awp:
-                use_awp = True
 
             if score > best_score:
                 best_score = score

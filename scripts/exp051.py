@@ -1,12 +1,11 @@
-"""exp042
+"""exp044
 
-- copy from exp041
+- copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- effb4
 
 Reference:
 [1]
@@ -50,6 +49,7 @@ from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
 from src.augmentations import cutmix
+from src.losses import soft_dice_loss
 
 dbg = logger.debug
 
@@ -113,7 +113,9 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = (
+        "exp051_fold5_Unet++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
+    )
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -124,7 +126,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 4
+    batch_size = 8 * 12
     use_amp: bool = True
     patience = 10
 
@@ -139,7 +141,7 @@ class CFG:
     decoder_lr = 5e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 1e-5
+    weight_decay = 5e-5
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -170,15 +172,16 @@ class CFG:
     # max_lr = 1e-4
 
     # GradualWarmupSchedulerの設定
-    T_max = 4
+    T_max = epoch // 3
 
     max_grad_norm = 1000.0
 
     # AWP params
-    start_awp = epoch - 5
+    start_awp = 10
     start_epoch = 10
+    adv_lr = 1e-7
     # adv_lr = 1e-6
-    adv_lr = 1e-5
+    # adv_lr = 1e-5
     adv_eps = 3
     adv_step = 1
 
@@ -198,23 +201,26 @@ class CFG:
 
     # loss weights
     weight_bce = 0.5
-    weight_focal = 0.0
+    weight_focal = 0.1
     # weight_cls = 0.05
     # weight_cls = 0.01
-    weight_cls = 0.1
+    # weight_cls = 0.1
+    weight_cls = 0.2
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # arch: str = "Unet"
-    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b4"
+
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
     in_chans: int = 7
-    # weights = "imagenet"
-    weights = "advprop"
+    weights = "imagenet"
+    # weights = "advprop"
     aux_params = {
         "classes": 1,
         "pooling": "avg",
@@ -223,12 +229,12 @@ class CFG:
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 1.0
-    mixup_alpha = 0.2
+    mixup_prob = 0.5
+    mixup_alpha = 0.1
 
-    cutmix = False
-    cutmix_prob = 1.0
-    cutmix_alpha = 0.2
+    cutmix = True
+    cutmix_prob = 0.5
+    cutmix_alpha = 0.1
 
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
@@ -1110,6 +1116,7 @@ class AWP:
             return None
         self._save()
         for i in range(self.adv_step):
+            # modelを近傍の悪い方へ改変
             self._attack_step()
             with autocast(device_type="cuda", enabled=self.scaler is not None):
                 logits = self.model(x)["pred_mask_logits"]
@@ -1121,6 +1128,7 @@ class AWP:
             else:
                 adv_loss.backward()
 
+        # awpする前のモデルに戻す
         self._restore()
 
     def _attack_step(self) -> None:
@@ -1134,6 +1142,7 @@ class AWP:
                 norm1 = torch.norm(param.grad)
                 norm2 = torch.norm(param.data.detach())
                 if norm1 != 0 and not torch.isnan(norm1):
+                    # 直前に損失関数でパラメータの勾配を取得できるようにしておく必要がある
                     r_at = self.adv_lr * param.grad / (norm1 + e) * (norm2 + e)
                     param.data.add_(r_at)
                     param.data = torch.min(
@@ -1222,6 +1231,7 @@ def train_per_epoch(
             if cfg.cutmix and np.random.rand() <= cfg.cutmix_prob:
                 image, target, _, _ = cutmix(image, target, alpha=cfg.cutmix_alpha)
 
+            # target: (N, H, W)
             if epoch < cfg.start_soft_aug_epoch:
                 image = image.to(cfg.device, non_blocking=True)
                 target = target.to(cfg.device, non_blocking=True)
@@ -1236,9 +1246,15 @@ def train_per_epoch(
 
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
+                # (N, 1, H, W)
                 pred_mask = outputs["pred_mask_logits"]
+                # (N, 1)
                 pred_label = outputs["pred_label_logits"]
-                loss_mask = criterion(pred_mask, target)
+
+                assert len(pred_mask.shape) == 4, f"Got {pred_mask.shape}"
+                assert pred_mask.shape[1] == 1
+
+                loss_mask = criterion(pred_mask.squeeze(1), target)
                 loss_cls = criterion_cls(pred_label, target_cls)
                 loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss /= cfg.grad_accum
@@ -1268,7 +1284,6 @@ def train_per_epoch(
 
                 scaler.step(optimizer)
                 scaler.update()
-
                 optimizer.zero_grad(set_to_none=True)
 
                 pbar.set_postfix(
@@ -1579,6 +1594,10 @@ def get_loss(cfg: CFG) -> nn.Module:
 
         return _loss
 
+    if cfg.loss == "SoftDice":
+        loss = soft_dice_loss.SoftDiceLossV2()
+        return loss
+
     raise ValueError(f"Invalid loss: {cfg.loss}")
 
 
@@ -1736,6 +1755,8 @@ def train(cfg: CFG) -> None:
                 + f"best dice: {best_dice} best th: {best_th}"
             )
             if epoch > cfg.start_awp:
+                if not use_awp:
+                    logger.info(f"Start using awp at epoch {epoch}")
                 use_awp = True
 
             if score > best_score:

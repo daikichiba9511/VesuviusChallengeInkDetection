@@ -1,12 +1,11 @@
-"""exp042
+"""exp049
 
-- copy from exp041
+- copy from exp044
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- increase tile size to increase context
 
 Reference:
 [1]
@@ -113,9 +112,9 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp049_fold5_Unet++_effb4_advprop_gradualwarm_mixup_tile512_slide74"
     random_state = 42
-    tile_size: int = 224
+    tile_size: int = 512
     image_size = (tile_size, tile_size)
     stride: int = tile_size // 3
     num_workers = mp.cpu_count()
@@ -139,7 +138,7 @@ class CFG:
     decoder_lr = 5e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 1e-5
+    weight_decay = 5e-5
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -175,8 +174,9 @@ class CFG:
     max_grad_norm = 1000.0
 
     # AWP params
-    start_awp = epoch - 5
-    start_epoch = 10
+    start_awp_epoch = 7
+    start_awp = epoch - start_awp_epoch
+    start_epoch = epoch - start_awp_epoch
     # adv_lr = 1e-6
     adv_lr = 1e-5
     adv_eps = 3
@@ -187,7 +187,7 @@ class CFG:
     start_soft_aug_epoch: int = epoch
 
     # num step of grad accumulation
-    grad_accum = 4
+    grad_accum = 4 * 2
 
     # ================= Loss cfg =====================
     # loss = "BCEWithLogitsLoss"
@@ -198,7 +198,7 @@ class CFG:
 
     # loss weights
     weight_bce = 0.5
-    weight_focal = 0.0
+    weight_focal = 0.1
     # weight_cls = 0.05
     # weight_cls = 0.01
     weight_cls = 0.1
@@ -208,7 +208,9 @@ class CFG:
     # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
+    encoder_name: str = "timm-efficientnet-b4"
+
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
@@ -1736,6 +1738,8 @@ def train(cfg: CFG) -> None:
                 + f"best dice: {best_dice} best th: {best_th}"
             )
             if epoch > cfg.start_awp:
+                if not use_awp:
+                    logger.info(f"Start using awp at epoch {epoch}")
                 use_awp = True
 
             if score > best_score:

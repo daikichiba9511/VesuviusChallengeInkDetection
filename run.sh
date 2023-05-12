@@ -24,8 +24,19 @@
 # WANDB_MODE=online poetry run python scripts/exp032_6.py
 
 # WANDB_MODE=online poetry run python scripts/exp038.py
-WANDB_MODE=online poetry run python scripts/exp034.py
-WANDB_MODE=online poetry run python scripts/exp039.py
-WANDB_MODE=online poetry run python scripts/exp040.py
-WANDB_MODE=online poetry run python scripts/exp042.py
+# WANDB_MODE=online poetry run python scripts/exp034.py
+# WANDB_MODE=online poetry run python scripts/exp039.py
+# WANDB_MODE=online poetry run python scripts/exp040.py
+# WANDB_MODE=online poetry run python scripts/exp042.py
 
+# WANDB_MODE=online poetry run python scripts/exp044.py
+# WANDB_MODE=online poetry run python scripts/exp044_2.py
+# WANDB_MODE=online poetry run python scripts/exp045.py
+# WANDB_MODE=online poetry run python scripts/exp046.py
+# WANDB_MODE=online poetry run python scripts/exp047.py
+# WANDB_MODE=online poetry run python scripts/exp048.py
+WANDB_MODE=online poetry run python scripts/exp049.py
+
+WANDB_MODE=online poetry run python scripts/exp050.py
+WANDB_MODE=online poetry run python scripts/exp050_2.py
+WANDB_MODE=online poetry run python scripts/exp051.py

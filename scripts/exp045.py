@@ -1,12 +1,11 @@
-"""exp042
+"""exp045
 
-- copy from exp041
+- copy from exp044
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- se-resnet101d
 
 Reference:
 [1]
@@ -113,7 +112,9 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = (
+        "exp045_fold5_Unet++_seresnext101_advprop_gradualwarm_mixup_tile224_slide74"
+    )
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
@@ -206,15 +207,17 @@ class CFG:
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # arch: str = "Unet"
-    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "se_resnext101_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b4"
+
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
     in_chans: int = 7
-    # weights = "imagenet"
-    weights = "advprop"
+    weights = "imagenet"
+    # weights = "advprop"
     aux_params = {
         "classes": 1,
         "pooling": "avg",

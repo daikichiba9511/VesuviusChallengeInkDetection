@@ -1,12 +1,11 @@
-"""exp042
+"""exp050
 
-- copy from exp041
+- copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- BCEWithLogitsLoss
-- RandomResizedCrop
+- tta.Rotate90 only
 
 Reference:
 [1]
@@ -113,18 +112,18 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp042_4_fold5_Unet++_effb7_advprop_gradualwarm_mixup_tile224_slide74"
+    exp_name = "exp050_fold5_Unet++_effb4_advprop_gradualwarm_cutmix_mixup_tile224_slide28_rotate_tta_only"
     random_state = 42
     tile_size: int = 224
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 3
+    stride: int = tile_size // 8
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 4
+    batch_size = 8 * 12
     use_amp: bool = True
     patience = 10
 
@@ -139,7 +138,7 @@ class CFG:
     decoder_lr = 5e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 1e-5
+    weight_decay = 5e-5
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -170,15 +169,16 @@ class CFG:
     # max_lr = 1e-4
 
     # GradualWarmupSchedulerの設定
-    T_max = 4
+    T_max = epoch // 3
 
     max_grad_norm = 1000.0
 
     # AWP params
-    start_awp = epoch - 5
+    start_awp = 10
     start_epoch = 10
+    adv_lr = 1e-7
     # adv_lr = 1e-6
-    adv_lr = 1e-5
+    # adv_lr = 1e-5
     adv_eps = 3
     adv_step = 1
 
@@ -198,17 +198,20 @@ class CFG:
 
     # loss weights
     weight_bce = 0.5
-    weight_focal = 0.0
+    weight_focal = 0.1
     # weight_cls = 0.05
     # weight_cls = 0.01
-    weight_cls = 0.1
+    # weight_cls = 0.1
+    weight_cls = 0.2
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
     # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b7"
+    encoder_name: str = "timm-efficientnet-b4"
+
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
@@ -223,12 +226,12 @@ class CFG:
 
     # ================= Data cfg =====================
     mixup = True
-    mixup_prob = 1.0
-    mixup_alpha = 0.2
+    mixup_prob = 0.5
+    mixup_alpha = 0.1
 
-    cutmix = False
-    cutmix_prob = 1.0
-    cutmix_alpha = 0.2
+    cutmix = True
+    cutmix_prob = 0.5
+    cutmix_alpha = 0.1
 
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
@@ -274,8 +277,8 @@ class CFG:
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
+            # tta.HorizontalFlip(),
+            # tta.VerticalFlip(),
             tta.Rotate90(angles=[0, 90, 180, 270]),
             # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
         ]
@@ -1110,6 +1113,7 @@ class AWP:
             return None
         self._save()
         for i in range(self.adv_step):
+            # modelを近傍の悪い方へ改変
             self._attack_step()
             with autocast(device_type="cuda", enabled=self.scaler is not None):
                 logits = self.model(x)["pred_mask_logits"]
@@ -1121,6 +1125,7 @@ class AWP:
             else:
                 adv_loss.backward()
 
+        # awpする前のモデルに戻す
         self._restore()
 
     def _attack_step(self) -> None:
@@ -1134,6 +1139,7 @@ class AWP:
                 norm1 = torch.norm(param.grad)
                 norm2 = torch.norm(param.data.detach())
                 if norm1 != 0 and not torch.isnan(norm1):
+                    # 直前に損失関数でパラメータの勾配を取得できるようにしておく必要がある
                     r_at = self.adv_lr * param.grad / (norm1 + e) * (norm2 + e)
                     param.data.add_(r_at)
                     param.data = torch.min(
@@ -1268,7 +1274,6 @@ def train_per_epoch(
 
                 scaler.step(optimizer)
                 scaler.update()
-
                 optimizer.zero_grad(set_to_none=True)
 
                 pbar.set_postfix(
@@ -1736,6 +1741,8 @@ def train(cfg: CFG) -> None:
                 + f"best dice: {best_dice} best th: {best_th}"
             )
             if epoch > cfg.start_awp:
+                if not use_awp:
+                    logger.info(f"Start using awp at epoch {epoch}")
                 use_awp = True
 
             if score > best_score:
