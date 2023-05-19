@@ -1,17 +1,15 @@
-"""exp052
+"""exp051
 
 - copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- UNETR
+- BCE, Stride=tile_size//8, img_size=512
 
 Reference:
-[1]
-https://www.kaggle.com/code/yururoi/pytorch-unet-baseline-with-train-code
-[2]
-https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
+[1] https://www.kaggle.com/code/yururoi/pytorch-unet-baseline-with-train-code
+[2] https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
 """
 from __future__ import annotations
 
@@ -21,6 +19,7 @@ import multiprocessing as mp
 import os
 import pickle
 import random
+import ssl
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -39,21 +38,21 @@ import torch.optim as optim
 import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
-from monai.networks.nets.unetr import UNETR
 from sklearn.metrics import roc_auc_score
 from timm.data.loader import PrefetchLoader
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
-from warmup_scheduler import GradualWarmupScheduler
+from warmup_scheduler import GradualWarmupScheduller
 
 import wandb
-# from src.augmentations import cutmix
+from src.augmentations import cutmix
+from src.losses import soft_dice_loss
 
 dbg = logger.debug
 
-# ssl._create_default_https_context = ssl._create_unverified_context
+ssl._create_default_https_context = ssl._create_unverified_context
 # torchvision.disable_beta_transforms_warning()
 warnings.simplefilter("ignore")
 
@@ -113,7 +112,9 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp052_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
+    exp_name = (
+        "exp051_fold5_Unet++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
+    )
     random_state = 42
     tile_size: int = 512
     image_size = (tile_size, tile_size)
@@ -124,8 +125,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    # batch_size = 8 * 3
-    batch_size = 24
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 10
 
@@ -141,8 +141,6 @@ class CFG:
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
-    lr = 1e-4 / warmup_factor
-
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -198,7 +196,8 @@ class CFG:
     # loss = "BCETverskyLoss"
     # loss = "BCEDiceLoss"
     # loss = "BCEFocalLovaszLoss"
-    loss = "BCEFocalDiceLoss"
+    # loss = "BCEFocalDiceLoss"
+    loss = "BCEWithLogitsLoss"
 
     # loss weights
     weight_bce = 0.5
@@ -209,13 +208,12 @@ class CFG:
     weight_cls = 0.2
 
     # ================= Model =====================
-    # arch: str = "UnetPlusPlus"
-    arch = "UNETR"
+    arch: str = "UnetPlusPlus"
     # arch: str = "Unet"
-    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
     # encoder_name: str = "timm-efficientnet-b7"
-    encoder_name: str = "timm-efficientnet-b4"
+    # encoder_name: str = "timm-efficientnet-b4"
 
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
@@ -695,16 +693,15 @@ class VCNet(nn.Module):
         aux_params: dict | None = None,
     ) -> None:
         super().__init__()
-
-        self.model = UNETR(
-            in_channels=7,
-            out_channels=num_classes,
-            img_size=CFG.tile_size,
-            dropout_rate=0.0,
-            spatial_dims=2
+        self.model = smp.create_model(
+            arch=arch,
+            encoder_name=encoder_name,
+            encoder_weights=weights,
+            in_channels=in_chans,
+            classes=num_classes,
+            activation=None,
+            aux_params=aux_params,
         )
-
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -714,10 +711,10 @@ class VCNet(nn.Module):
             masks: (N, 1, H, W)
             labels: (N, 1)
         """
-        masks = self.model(x)
+        masks, labels = self.model(x)
         return {
             "pred_mask_logits": masks,
-            # "pred_label_logits": labels,
+            "pred_label_logits": labels,
         }
 
 
@@ -1234,6 +1231,7 @@ def train_per_epoch(
             if cfg.cutmix and np.random.rand() <= cfg.cutmix_prob:
                 image, target, _, _ = cutmix(image, target, alpha=cfg.cutmix_alpha)
 
+            # target: (N, H, W)
             if epoch < cfg.start_soft_aug_epoch:
                 image = image.to(cfg.device, non_blocking=True)
                 target = target.to(cfg.device, non_blocking=True)
@@ -1246,19 +1244,19 @@ def train_per_epoch(
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
 
-            # (B, C, H, W)
-            # print(f"{image.shape}")
-            # image = image.unsqueeze(2)
-            # print(f"{image.shape}")
-
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
+                # (N, 1, H, W)
                 pred_mask = outputs["pred_mask_logits"]
-                # pred_label = outputs["pred_label_logits"]
-                loss_mask = criterion(pred_mask, target)
-                # loss_cls = criterion_cls(pred_label, target_cls)
-                # loss = loss_mask + (cfg.weight_cls * loss_cls)
-                loss = loss_mask
+                # (N, 1)
+                pred_label = outputs["pred_label_logits"]
+
+                assert len(pred_mask.shape) == 4, f"Got {pred_mask.shape}"
+                assert pred_mask.shape[1] == 1
+
+                loss_mask = criterion(pred_mask.squeeze(1), target)
+                loss_cls = criterion_cls(pred_label, target_cls)
+                loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss /= cfg.grad_accum
 
             running_loss.update(value=loss.item(), n=batch_size)
@@ -1349,19 +1347,18 @@ def valid_per_epoch(
             loss_mask = criterion(y_preds, target)
 
             # cls: (N, 1)
-            # pred = model(image)
-            # pred_logtis = pred["pred_label_logits"]
-            # loss_cls = nn.BCEWithLogitsLoss()(pred_logtis, target_cls)
-            # accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
-            # loss = loss_mask + (cfg.weight_cls * loss_cls)
-            loss = loss_mask
+            pred = model(image)
+            pred_logtis = pred["pred_label_logits"]
+            loss_cls = nn.BCEWithLogitsLoss()(pred_logtis, target_cls)
+            accs = ((pred_logtis > 0.5) == target_cls).sum().item() / batch_size
+            loss = loss_mask + (cfg.weight_cls * loss_cls)
 
         valid_losses.update(value=loss.item(), n=batch_size)
         wandb.log(
             {
                 f"fold{fold}_valid_loss": loss.item(),
-                # f"fold{fold}_valid_cls_loss": loss_cls.item(),
-                # f"fold{fold}_valid_acc": accs,
+                f"fold{fold}_valid_cls_loss": loss_cls.item(),
+                f"fold{fold}_valid_acc": accs,
             }
         )
 
@@ -1379,21 +1376,17 @@ def valid_per_epoch(
 
 
 def get_optimizer(cfg: CFG, model: nn.Module) -> nn.optim.Optimizer:
-    if isinstance(model, UNETR):
-        optimizer = optim.AdamW(params=model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    params = [
+        {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
+        {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
+    ]
+    if cfg.optimizer == "AdamW":
+        optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
         return optimizer
-    else:
-        params = [
-            {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
-            {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
-        ]
-        if cfg.optimizer == "AdamW":
-            optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
-            return optimizer
-        if cfg.optimizer == "RAdam":
-            optimizer = optim.RAdam(params=params, weight_decay=1e-6)
-            return optimizer
-        raise ValueError(f"{cfg.optimizer} is not supported")
+    if cfg.optimizer == "RAdam":
+        optimizer = optim.RAdam(params=params, weight_decay=1e-6)
+        return optimizer
+    raise ValueError(f"{cfg.optimizer} is not supported")
 
 
 class GradualWarmupSchedulerV2(GradualWarmupScheduler):
@@ -1601,6 +1594,10 @@ def get_loss(cfg: CFG) -> nn.Module:
 
         return _loss
 
+    if cfg.loss == "SoftDice":
+        loss = soft_dice_loss.SoftDiceLossV2()
+        return loss
+
     raise ValueError(f"Invalid loss: {cfg.loss}")
 
 
@@ -1774,9 +1771,6 @@ def train(cfg: CFG) -> None:
                 logger.info(f"Early stopping at epoch {epoch}")
                 break
 
-            gc.collect()
-            torch.cuda.empty_cache()
-
         early_stopping.save_checkpoint(val_loss=0, model=net, prefix="last-")
 
         mask_preds = torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["preds"]
@@ -1788,8 +1782,6 @@ def train(cfg: CFG) -> None:
         axes[2].imshow((mask_preds >= best_th).astype(np.uint8))
         axes[2].set_title("Pred with threshold")
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
-        gc.collect()
-        torch.cuda.empty_cache()
 
     best_dices = [
         torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"]

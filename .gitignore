@@ -7,3 +7,4 @@ docs
 wandb
 .venv
 .vscode
+set.sh

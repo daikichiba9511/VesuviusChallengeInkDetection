@@ -1,11 +1,12 @@
-"""exp052
+"""exp054
 
-- copy from exp042
+- copy from exp053
 - 2.5D segmentation
 
 DIFF:
 
-- UNETR
+# - Tversky loss
+- add rotate augmentations(0, 90, 180, 270)
 
 Reference:
 [1]
@@ -49,7 +50,7 @@ from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
-# from src.augmentations import cutmix
+from src.augmentations import cutmix
 
 dbg = logger.debug
 
@@ -62,11 +63,7 @@ IS_TRAIN = not Path("/kaggle/working").exists()
 MAKE_SUB: bool = False
 SKIP_TRAIN = False
 
-logger.info(
-    f"Meta Config: IS_TRAIN={IS_TRAIN},"
-    + f"MAKE_SUB={MAKE_SUB},"
-    + f"SKIP_TRAIN={SKIP_TRAIN}"
-)
+logger.info(f"Meta Config: IS_TRAIN={IS_TRAIN}," + f"MAKE_SUB={MAKE_SUB}," + f"SKIP_TRAIN={SKIP_TRAIN}")
 
 
 if IS_TRAIN:
@@ -113,19 +110,19 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp052_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
+    exp_name = "exp053_fold5_UNET++_effb4_gradualwarm_cutmix_mixup_tile224_slide74"
     random_state = 42
-    tile_size: int = 512
+    # tile_size: int = 224
+    tile_size: int = 552
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 8
+    stride: int = tile_size // 3
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    # batch_size = 8 * 3
-    batch_size = 24
+    batch_size = 8 * 4
     use_amp: bool = True
     patience = 10
 
@@ -141,8 +138,6 @@ class CFG:
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
-    lr = 1e-4 / warmup_factor
-
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -198,31 +193,34 @@ class CFG:
     # loss = "BCETverskyLoss"
     # loss = "BCEDiceLoss"
     # loss = "BCEFocalLovaszLoss"
-    loss = "BCEFocalDiceLoss"
+    # loss = "BCEFocalDiceLoss"
+    loss = "TverskyLoss"
 
     # loss weights
-    weight_bce = 0.5
-    weight_focal = 0.1
+    # weight_bce = 0.5
+    # weight_focal = 0.1
     # weight_cls = 0.05
     # weight_cls = 0.01
     # weight_cls = 0.1
     weight_cls = 0.2
 
     # ================= Model =====================
-    # arch: str = "UnetPlusPlus"
-    arch = "UNETR"
+    arch: str = "UnetPlusPlus"
+    # arch = "UNETR"
     # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
     # encoder_name: str = "timm-efficientnet-b7"
     encoder_name: str = "timm-efficientnet-b4"
+    # encoder_name: str = "timm-efficientnet-b3"
 
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
     in_chans: int = 7
-    weights = "imagenet"
+    # weights = "imagenet"
     # weights = "advprop"
+    weights = "noisy-student"
     aux_params = {
         "classes": 1,
         "pooling": "avg",
@@ -243,6 +241,7 @@ class CFG:
         A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.75),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
@@ -349,10 +348,7 @@ def make_tile_array(
         image_size: (H, W)
     """
     stack_pred = np.vstack(valid_preds).reshape(-1, image_size[0], image_size[1])
-    tile_array = [
-        stack_pred[h_i * w_count : (h_i + 1) * w_count].astype(np.float32)
-        for h_i in range(h_count)
-    ]
+    tile_array = [stack_pred[h_i * w_count : (h_i + 1) * w_count].astype(np.float32) for h_i in range(h_count)]
     return tile_array
 
 
@@ -402,26 +398,11 @@ def mixup(
 
 
 def get_surface_volume_images() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    image1 = np.stack(
-        [
-            cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0)
-            for i in tqdm(range(65))
-        ]
-    )
+    image1 = np.stack([cv2.imread(str(DATA_DIR / f"train/1/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
 
-    image2 = np.stack(
-        [
-            cv2.imread(str(DATA_DIR / f"train/2/surface_volume/{i:02}.tif"), 0)
-            for i in tqdm(range(65))
-        ]
-    )
+    image2 = np.stack([cv2.imread(str(DATA_DIR / f"train/2/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
 
-    image3 = np.stack(
-        [
-            cv2.imread(str(DATA_DIR / f"train/3/surface_volume/{i:02}.tif"), 0)
-            for i in tqdm(range(65))
-        ]
-    )
+    image3 = np.stack([cv2.imread(str(DATA_DIR / f"train/3/surface_volume/{i:02}.tif"), 0) for i in tqdm(range(65))])
     return image1, image2, image3
 
 
@@ -464,9 +445,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
     end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
-        image = cv2.imread(
-            str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0
-        )
+        image = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/surface_volume/{i:02}.tif"), 0)
 
         assert image.ndim == 2
 
@@ -488,13 +467,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
 def get_train_valid_split(
     cfg: CFG, valid_id: int
-) -> tuple[
-    list[np.ndarray],
-    list[np.ndarray],
-    list[np.ndarray],
-    list[np.ndarray],
-    list[list[int]],
-]:
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray], list[list[int]],]:
     """訓練データと検証データを分割する
 
     Args:
@@ -518,9 +491,7 @@ def get_train_valid_split(
         # image: (h, w, in_chans)
         # mask: (h, w)
         image, mask = read_image_mask(cfg=cfg, fragment_id=fragment_id)
-        dbg(
-            f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}"
-        )
+        dbg(f"fragment_id={fragment_id}, image.shape={image.shape}, mask.shape={mask.shape}")
 
         x1_list = list(range(0, mask.shape[1] - cfg.tile_size + 1, cfg.stride))
         y1_list = list(range(0, mask.shape[0] - cfg.tile_size + 1, cfg.stride))
@@ -540,23 +511,17 @@ def get_train_valid_split(
                     or (
                         fragment_id == 2
                         and valid_id == 2
-                        and fragment_id_2_split_range[0]
-                        <= y2
-                        < fragment_id_2_split_range[1]
+                        and fragment_id_2_split_range[0] <= y2 < fragment_id_2_split_range[1]
                     )  # fold2
                     or (
                         fragment_id == 2
                         and valid_id == 3
-                        and fragment_id_2_split_range[1]
-                        <= y2
-                        < fragment_id_2_split_range[2]
+                        and fragment_id_2_split_range[1] <= y2 < fragment_id_2_split_range[2]
                     )  # fold3
                     or (
                         fragment_id == 2
                         and valid_id == 4
-                        and fragment_id_2_split_range[2]
-                        <= y2
-                        < fragment_id_2_split_range[3]
+                        and fragment_id_2_split_range[2] <= y2 < fragment_id_2_split_range[3]
                     )  # fold4
                     or (fragment_id == 3 and valid_id == 5)  # fold5
                 ):
@@ -622,9 +587,7 @@ class VCDataset(Dataset):
         self.phase = phase
         if phase == "train":
             if not isinstance(transform_fn, tuple):
-                raise ValueError(
-                    "Expedted transform_fn to be tuple, but got not tuple."
-                )
+                raise ValueError("Expedted transform_fn to be tuple, but got not tuple.")
             self.transform_fn, self.soft_transform_fn = transform_fn
         else:
             self.transform_fn = transform_fn
@@ -635,9 +598,7 @@ class VCDataset(Dataset):
     def __getitem__(
         self, idx: int
     ) -> (
-        tuple[torch.Tensor, torch.Tensor]
-        | torch.Tensor
-        | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        tuple[torch.Tensor, torch.Tensor] | torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
     ):
         """
         Returns:
@@ -695,16 +656,24 @@ class VCNet(nn.Module):
         aux_params: dict | None = None,
     ) -> None:
         super().__init__()
+        if arch == "UNETRA":
+            self.model = UNETR(
+                in_channels=in_chans,
+                out_channels=num_classes,
+                img_size=(CFG.tile_size, CFG.tile_size),
+                dropout_rate=0.0,
+            )
 
-        self.model = UNETR(
-            in_channels=7,
-            out_channels=num_classes,
-            img_size=CFG.tile_size,
-            dropout_rate=0.0,
-            spatial_dims=2
-        )
-
-
+        else:
+            self.model = smp.create_model(
+                arch=arch,
+                encoder_name=encoder_name,
+                encoder_weights=weights,
+                in_channels=in_chans,
+                classes=num_classes,
+                activation=None,
+                aux_params=aux_params,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -795,27 +764,19 @@ class EarlyStopping:
 
         if score < self.best_score + self.delta:
             self.counter += 1
-            self.logger_fn(
-                f"EarlyStopping Counter: {self.counter} out of {self.patience}"
-            )
+            self.logger_fn(f"EarlyStopping Counter: {self.counter} out of {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            self.logger_fn(
-                f"Detected Increasing Score: best score {self.best_score} --> {score}"
-            )
+            self.logger_fn(f"Detected Increasing Score: best score {self.best_score} --> {score}")
             self.best_score = score
             self.save_checkpoint(val_loss=val_loss, model=model)
             self.counter = 0
 
-    def save_checkpoint(
-        self, val_loss: float, model: nn.Module, prefix: str = ""
-    ) -> None:
+    def save_checkpoint(self, val_loss: float, model: nn.Module, prefix: str = "") -> None:
         """Save model when validation loss decrease."""
         if self.verbose:
-            self.logger_fn(
-                f"Validation loss decreased ({self.val_loss_min} --> {val_loss})"
-            )
+            self.logger_fn(f"Validation loss decreased ({self.val_loss_min} --> {val_loss})")
 
         state_dict = model.state_dict()
         save_prefix = prefix if prefix != "" else self.save_prefix
@@ -915,12 +876,7 @@ def dice_coef_torch(
     beta_square = beta**2
     c_precision = ctp / (ctp + cfp + smooth)
     c_recall = ctp / (y_true_count + smooth)
-    dice = (
-        (1 + beta_square)
-        * c_precision
-        * c_recall
-        / (beta_square * c_precision + c_recall + smooth)
-    )
+    dice = (1 + beta_square) * c_precision * c_recall / (beta_square * c_precision + c_recall + smooth)
     return dice
 
 
@@ -939,9 +895,7 @@ def calc_dice(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     return dice
 
 
-def fbeta_numpy(
-    targets: np.ndarray, preds: np.ndarray, beta: float = 0.5, smooth: float = 1e-5
-) -> np.float32:
+def fbeta_numpy(targets: np.ndarray, preds: np.ndarray, beta: float = 0.5, smooth: float = 1e-5) -> np.float32:
     """Compute fbeta score
     https://www.kaggle.com/competitions/vesuvius-challenge-ink-detection/discussion/397288
 
@@ -961,12 +915,7 @@ def fbeta_numpy(
 
     c_precision = ctp / (ctp + cfp + smooth)
     c_recall = ctp / (y_true_count + smooth)
-    fbeta = (
-        (1 + beta_square)
-        * c_precision
-        * c_recall
-        / (beta_square * c_precision + c_recall + smooth)
-    )
+    fbeta = (1 + beta_square) * c_precision * c_recall / (beta_square * c_precision + c_recall + smooth)
     return fbeta
 
 
@@ -1009,9 +958,7 @@ def calc_cv(mask_gt, mask_pred):
     return best_dice, best_th
 
 
-def plot_dataset(
-    cfg: CFG, train_images: list[np.ndarray], train_labels: list[np.ndarray]
-) -> None:
+def plot_dataset(cfg: CFG, train_images: list[np.ndarray], train_labels: list[np.ndarray]) -> None:
     """Plot dataset
 
     Args:
@@ -1019,11 +966,7 @@ def plot_dataset(
         train_labels (np.ndarray): (N, H, W)
     """
     transform = A.Compose(
-        [
-            t
-            for t in get_alb_transforms(cfg=cfg, phase="train")
-            if not isinstance(t, (A.Normalize, ToTensorV2))
-        ]
+        [t for t in get_alb_transforms(cfg=cfg, phase="train") if not isinstance(t, (A.Normalize, ToTensorV2))]
     )
     dataset = VCDataset(cfg=cfg, images=train_images, labels=train_labels)
 
@@ -1137,11 +1080,7 @@ class AWP:
     def _attack_step(self) -> None:
         e = 1e-6
         for name, param in self.model.named_parameters():
-            if (
-                param.requires_grad
-                and param.grad is not None
-                and self.adv_param in name
-            ):
+            if param.requires_grad and param.grad is not None and self.adv_param in name:
                 norm1 = torch.norm(param.grad)
                 norm2 = torch.norm(param.data.detach())
                 if norm1 != 0 and not torch.isnan(norm1):
@@ -1156,11 +1095,7 @@ class AWP:
 
     def _save(self) -> None:
         for name, param in self.model.named_parameters():
-            if (
-                param.requires_grad
-                and param.grad is not None
-                and self.adv_param in name
-            ):
+            if param.requires_grad and param.grad is not None and self.adv_param in name:
                 if name not in self.backup:
                     self.backup[name] = param.data.clone()
                     grad_eps = self.adv_eps * param.abs().detach()
@@ -1222,9 +1157,7 @@ def train_per_epoch(
     )
     running_loss = AverageMeter(name="train_loss")
     # train_losses = []
-    with tqdm(
-        enumerate(train_loader), total=len(train_loader), dynamic_ncols=True
-    ) as pbar:
+    with tqdm(enumerate(train_loader), total=len(train_loader), dynamic_ncols=True) as pbar:
         for step, (image, target, soft_image, soft_mask) in pbar:
             model.train()
 
@@ -1245,11 +1178,6 @@ def train_per_epoch(
             # target = target.to(cfg.device, non_blocking=True)
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
-
-            # (B, C, H, W)
-            # print(f"{image.shape}")
-            # image = image.unsqueeze(2)
-            # print(f"{image.shape}")
 
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
@@ -1280,9 +1208,7 @@ def train_per_epoch(
                 # https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
                 # scaler.unscale_(optimizer)
                 # clip gradient of parameters
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), cfg.max_grad_norm
-                )
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
 
                 scaler.step(optimizer)
                 scaler.update()
@@ -1379,21 +1305,17 @@ def valid_per_epoch(
 
 
 def get_optimizer(cfg: CFG, model: nn.Module) -> nn.optim.Optimizer:
-    if isinstance(model, UNETR):
-        optimizer = optim.AdamW(params=model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    params = [
+        {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
+        {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
+    ]
+    if cfg.optimizer == "AdamW":
+        optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
         return optimizer
-    else:
-        params = [
-            {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
-            {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
-        ]
-        if cfg.optimizer == "AdamW":
-            optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
-            return optimizer
-        if cfg.optimizer == "RAdam":
-            optimizer = optim.RAdam(params=params, weight_decay=1e-6)
-            return optimizer
-        raise ValueError(f"{cfg.optimizer} is not supported")
+    if cfg.optimizer == "RAdam":
+        optimizer = optim.RAdam(params=params, weight_decay=1e-6)
+        return optimizer
+    raise ValueError(f"{cfg.optimizer} is not supported")
 
 
 class GradualWarmupSchedulerV2(GradualWarmupScheduler):
@@ -1402,29 +1324,21 @@ class GradualWarmupSchedulerV2(GradualWarmupScheduler):
     """
 
     def __init__(self, optimizer, multiplier, total_epoch, after_scheduler=None):
-        super(GradualWarmupSchedulerV2, self).__init__(
-            optimizer, multiplier, total_epoch, after_scheduler
-        )
+        super(GradualWarmupSchedulerV2, self).__init__(optimizer, multiplier, total_epoch, after_scheduler)
 
     def get_lr(self):
         if self.last_epoch > self.total_epoch:
             if self.after_scheduler:
                 if not self.finished:
-                    self.after_scheduler.base_lrs = [
-                        base_lr * self.multiplier for base_lr in self.base_lrs
-                    ]
+                    self.after_scheduler.base_lrs = [base_lr * self.multiplier for base_lr in self.base_lrs]
                     self.finished = True
                 return self.after_scheduler.get_lr()
             return [base_lr * self.multiplier for base_lr in self.base_lrs]
         if self.multiplier == 1.0:
-            return [
-                base_lr * (float(self.last_epoch) / self.total_epoch)
-                for base_lr in self.base_lrs
-            ]
+            return [base_lr * (float(self.last_epoch) / self.total_epoch) for base_lr in self.base_lrs]
         else:
             return [
-                base_lr
-                * ((self.multiplier - 1.0) * self.last_epoch / self.total_epoch + 1.0)
+                base_lr * ((self.multiplier - 1.0) * self.last_epoch / self.total_epoch + 1.0)
                 for base_lr in self.base_lrs
             ]
 
@@ -1433,9 +1347,7 @@ def get_scheduler(
     cfg: CFG, optimizer: nn.optim.Optimizer, step_per_epoch: int | None = None
 ) -> nn.optim.lr_scheduler._LRScheduler:
     if cfg.scheduler == "CosineAnnealingLR":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cfg.epoch, eta_min=1e-6
-        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epoch, eta_min=1e-6)
         return scheduler
     if cfg.scheduler == "OneCycleLR":
         scheduler = optim.lr_scheduler.OneCycleLR(
@@ -1476,9 +1388,7 @@ def get_scheduler(
         return scheduler
 
     if cfg.scheduler == "GradualWarmupScheduler":
-        scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer=optimizer, T_max=cfg.T_max, eta_min=1e-7
-        )
+        scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=cfg.T_max, eta_min=1e-7)
         scheduler = GradualWarmupSchedulerV2(
             optimizer=optimizer,
             multiplier=10,
@@ -1505,9 +1415,7 @@ def get_loss(cfg: CFG) -> nn.Module:
         def _loss(y_pred, y_true, alpha=cfg.weight_bce):
             bce_loss = nn.BCEWithLogitsLoss()
             dice_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
-            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * dice_loss(
-                y_pred, y_true
-            )
+            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * dice_loss(y_pred, y_true)
 
         return _loss
     if cfg.loss == "BCELovaszLoss":
@@ -1515,9 +1423,7 @@ def get_loss(cfg: CFG) -> nn.Module:
         def _loss(y_pred, y_true, alpha=0.5):
             bce_loss = nn.BCEWithLogitsLoss()
             lobasz_loss = smp.losses.LovaszLoss(mode="binary", from_logits=True)
-            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * lobasz_loss(
-                y_pred, y_true
-            )
+            return alpha * bce_loss(y_pred, y_true) + (1 - alpha) * lobasz_loss(y_pred, y_true)
 
         return _loss
 
@@ -1567,21 +1473,15 @@ def get_loss(cfg: CFG) -> nn.Module:
 
     if cfg.loss == "TverskyLoss":
         # alpha: FP weight, beta: FN weight
-        loss = smp.losses.TverskyLoss(
-            mode="binary", from_logits=True, alpha=0.7, beta=0.3
-        )
+        loss = smp.losses.TverskyLoss(mode="binary", from_logits=True, alpha=0.7, beta=0.3)
         return loss
 
     if cfg.loss == "BCETverskyLoss":
 
         def _loss(y_pred, y_true, lamb=0.5):
             bce_loss = nn.BCEWithLogitsLoss()
-            tversky_loss = smp.losses.TverskyLoss(
-                mode="binary", from_logits=True, alpha=0.7, beta=0.3
-            )
-            return lamb * bce_loss(y_pred, y_true) + (1 - lamb) * tversky_loss(
-                y_pred, y_true
-            )
+            tversky_loss = smp.losses.TverskyLoss(mode="binary", from_logits=True, alpha=0.7, beta=0.3)
+            return lamb * bce_loss(y_pred, y_true) + (1 - lamb) * tversky_loss(y_pred, y_true)
 
         return _loss
 
@@ -1590,14 +1490,8 @@ def get_loss(cfg: CFG) -> nn.Module:
         def _loss(y_pred, y_true):
             bce_loss = nn.BCEWithLogitsLoss()
             dice_loss = smp.losses.DiceLoss(mode="binary", from_logits=True)
-            tversky_loss = smp.losses.TverskyLoss(
-                mode="binary", from_logits=True, alpha=0.7, beta=0.3
-            )
-            return (
-                bce_loss(y_pred, y_true)
-                + dice_loss(y_pred, y_true)
-                + 2 * tversky_loss(y_pred, y_true)
-            )
+            tversky_loss = smp.losses.TverskyLoss(mode="binary", from_logits=True, alpha=0.7, beta=0.3)
+            return bce_loss(y_pred, y_true) + dice_loss(y_pred, y_true) + 2 * tversky_loss(y_pred, y_true)
 
         return _loss
 
@@ -1666,9 +1560,7 @@ def train(cfg: CFG) -> None:
         logger.info(f"valid_labels.shape: {len(valid_labels)}")
 
         fragment_id = {1: 1, 2: 2, 3: 2, 4: 2, 5: 3}[fold]
-        valid_mask_gt = cv2.imread(
-            str(DATA_DIR / f"train/{fragment_id}/inklabels.png"), 0
-        )
+        valid_mask_gt = cv2.imread(str(DATA_DIR / f"train/{fragment_id}/inklabels.png"), 0)
         valid_mask_gt = valid_mask_gt / 255
         pad0 = cfg.tile_size - valid_mask_gt.shape[0] % cfg.tile_size
         pad1 = cfg.tile_size - valid_mask_gt.shape[1] % cfg.tile_size
@@ -1702,9 +1594,7 @@ def train(cfg: CFG) -> None:
         criterion = get_loss(cfg=cfg)
         criterion_cls = nn.BCEWithLogitsLoss()
         optimizer = get_optimizer(cfg=cfg, model=net.model)
-        scheduler = get_scheduler(
-            cfg=cfg, optimizer=optimizer, step_per_epoch=len(train_loader)
-        )
+        scheduler = get_scheduler(cfg=cfg, optimizer=optimizer, step_per_epoch=len(train_loader))
         scaler = torch.cuda.amp.grad_scaler.GradScaler(enabled=cfg.use_amp)
 
         best_score = 0
@@ -1774,9 +1664,6 @@ def train(cfg: CFG) -> None:
                 logger.info(f"Early stopping at epoch {epoch}")
                 break
 
-            gc.collect()
-            torch.cuda.empty_cache()
-
         early_stopping.save_checkpoint(val_loss=0, model=net, prefix="last-")
 
         mask_preds = torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["preds"]
@@ -1788,12 +1675,9 @@ def train(cfg: CFG) -> None:
         axes[2].imshow((mask_preds >= best_th).astype(np.uint8))
         axes[2].set_title("Pred with threshold")
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
-        gc.collect()
-        torch.cuda.empty_cache()
 
     best_dices = [
-        torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"]
-        for fold in range(1, cfg.n_fold + 1)
+        torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"] for fold in range(1, cfg.n_fold + 1)
     ]
     logger.info(f"best dices: {best_dices}")
     mean_dice = np.mean(best_dices)
@@ -1831,9 +1715,7 @@ def valid(cfg: CFG) -> None:
             encoder_name=cfg.encoder_name,
             in_chans=cfg.in_chans,
         )
-        net.load_state_dict(
-            torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth")
-        )
+        net.load_state_dict(torch.load(OUTPUT_DIR / cfg.exp_name / f"checkpoint_{fold}.pth"))
         net = net.to(cfg.device)
 
         valid_dataset = VCDataset(
@@ -1864,9 +1746,7 @@ def valid(cfg: CFG) -> None:
         mask_count = np.zeros(valid_mask_gt.shape)
         valid_preds = []
         valid_targets = []
-        for step, (image, target) in tqdm(
-            enumerate(valid_loader), total=len(valid_loader), dynamic_ncols=True
-        ):
+        for step, (image, target) in tqdm(enumerate(valid_loader), total=len(valid_loader), dynamic_ncols=True):
             net.eval()
             image = image.to(cfg.device)
             target = target.to(cfg.device)
@@ -1911,9 +1791,7 @@ def read_image(cfg: CFG, fragment_id: str) -> np.ndarray:
     idxs = range(start, end)
 
     for i in tqdm(idxs):
-        image = cv2.imread(
-            str(DATA_DIR / f"test/{fragment_id}/surface_volume/{i:02}.tif"), 0
-        )
+        image = cv2.imread(str(DATA_DIR / f"test/{fragment_id}/surface_volume/{i:02}.tif"), 0)
 
         pad0 = cfg.tile_size - image.shape[0] % cfg.tile_size
         pad1 = cfg.tile_size - image.shape[1] % cfg.tile_size
@@ -1981,15 +1859,11 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
     if cfg.use_tta:
         model = tta.SegmentationTTAWrapper(model, cfg.tta_transforms, merge_mode="mean")
     for fragment_id, fragment_path in enumerate(fragment_ids, start=1):
-        test_loader, xyxy_list = make_test_datast(
-            cfg=cfg, fragment_id=fragment_path.stem
-        )
+        test_loader, xyxy_list = make_test_datast(cfg=cfg, fragment_id=fragment_path.stem)
         dbg(f"xyxy_list.shape: {xyxy_list.shape}")
         dbg(f"xyxy_list.min: {xyxy_list.min()}, xyxy_list.max: {xyxy_list.max()}")
 
-        binary_mask = cv2.imread(
-            str(DATA_DIR / f"test/{fragment_path.stem}/mask.png"), 0
-        )
+        binary_mask = cv2.imread(str(DATA_DIR / f"test/{fragment_path.stem}/mask.png"), 0)
         binary_mask = (binary_mask / 255).astype(np.int8)
 
         ori_h = binary_mask.shape[0]
@@ -2028,9 +1902,7 @@ def predict(cfg: CFG, test_data_dir: Path, threshold: float) -> np.ndarray:
 
     if IS_TRAIN:
         logger.info("save mask_pred_count, mask_pred")
-        plt.imsave(
-            str(OUTPUT_DIR / cfg.exp_name / "mas-pred-count.png"), mask_pred_count
-        )
+        plt.imsave(str(OUTPUT_DIR / cfg.exp_name / "mas-pred-count.png"), mask_pred_count)
         # plt.imsave(OUTPUT_DIR / cfg.exp_name / "mas-pred.png", mask_pred)
         plt.close("all")
     else:
@@ -2052,20 +1924,12 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
 
         if IS_TRAIN:
             plt.imsave(
-                str(
-                    OUTPUT_DIR
-                    / cfg.exp_name
-                    / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png"
-                ),
+                str(OUTPUT_DIR / cfg.exp_name / f"test_pred_tile_image_{str(fp).replace('/', '_')}.png"),
                 pred_tile_image,
             )
             plt.close("all")
             plt.imsave(
-                str(
-                    OUTPUT_DIR
-                    / cfg.exp_name
-                    / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png"
-                ),
+                str(OUTPUT_DIR / cfg.exp_name / f"test_pred_tile_image_mask_{str(fp).replace('/', '_')}.png"),
                 np.where(pred_tile_image > threshold, 1, 0),
             )
             plt.close("all")
@@ -2083,9 +1947,7 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
         # inklabels_rle = " ".join(map(str, sum(tqdm(zip(starts_idx, lengths)), ())))
         inklabels_rle = fast_rle(img=pred_tile_image)
         if IS_TRAIN:
-            logger.info(
-                f"ID: {str(fp).split('/')[-1]}, inklabels_rle: {inklabels_rle[:10]}"
-            )
+            logger.info(f"ID: {str(fp).split('/')[-1]}, inklabels_rle: {inklabels_rle[:10]}")
         preds.append({"Id": str(fp).split("/")[-1], "Predicted": inklabels_rle})
         del pred_tile_image, inklabels_rle
         gc.collect()
@@ -2123,11 +1985,7 @@ def main() -> None:
     if MAKE_SUB:
         preds = test(cfg, threshold=THR)
         print(preds)
-        save_path = (
-            "submission.csv"
-            if not IS_TRAIN
-            else OUTPUT_DIR / cfg.exp_name / "submission.csv"
-        )
+        save_path = "submission.csv" if not IS_TRAIN else OUTPUT_DIR / cfg.exp_name / "submission.csv"
         preds.to_csv(save_path, index=False)
         if SKIP_TRAIN:
             test_duration = datetime.now() - start_time

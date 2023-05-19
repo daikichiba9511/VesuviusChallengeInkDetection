@@ -1,17 +1,15 @@
-"""exp044
+"""exp051
 
 - copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-- effb4
+- seresnext50
 
 Reference:
-[1]
-https://www.kaggle.com/code/yururoi/pytorch-unet-baseline-with-train-code
-[2]
-https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
+[1] https://www.kaggle.com/code/yururoi/pytorch-unet-baseline-with-train-code
+[2] https://www.kaggle.com/code/tanakar/2-5d-segmentaion-baseline-inference
 """
 from __future__ import annotations
 
@@ -21,6 +19,7 @@ import multiprocessing as mp
 import os
 import pickle
 import random
+import ssl
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -53,7 +52,7 @@ from src.losses import soft_dice_loss
 
 dbg = logger.debug
 
-# ssl._create_default_https_context = ssl._create_unverified_context
+ssl._create_default_https_context = ssl._create_unverified_context
 # torchvision.disable_beta_transforms_warning()
 warnings.simplefilter("ignore")
 
@@ -1254,7 +1253,7 @@ def train_per_epoch(
                 assert len(pred_mask.shape) == 4, f"Got {pred_mask.shape}"
                 assert pred_mask.shape[1] == 1
 
-                loss_mask = criterion(pred_mask.squeeze(1), target)
+                loss_mask = criterion(pred_mask, target)
                 loss_cls = criterion_cls(pred_label, target_cls)
                 loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss /= cfg.grad_accum
