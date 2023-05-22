@@ -242,6 +242,7 @@ class CFG:
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
         A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.RandomRotate90(p=0.75),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),

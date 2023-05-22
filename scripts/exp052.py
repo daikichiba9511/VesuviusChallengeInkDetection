@@ -49,7 +49,7 @@ from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
-# from src.augmentations import cutmix
+from src.augmentations import cutmix
 
 dbg = logger.debug
 
@@ -115,7 +115,7 @@ class CFG:
     # ================= Global cfg =====================
     exp_name = "exp052_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
     random_state = 42
-    tile_size: int = 512
+    tile_size: int = 352
     image_size = (tile_size, tile_size)
     stride: int = tile_size // 8
     num_workers = mp.cpu_count()
@@ -125,7 +125,7 @@ class CFG:
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
     # batch_size = 8 * 3
-    batch_size = 24
+    batch_size = 40
     use_amp: bool = True
     patience = 10
 
@@ -136,13 +136,14 @@ class CFG:
     warmup_factor = 10
     # encoder_lr = 3e-6 / warmup_factor
     # decoder_lr = 3e-5 / warmup_factor
-    encoder_lr = 5e-4 / warmup_factor
-    decoder_lr = 5e-3 / warmup_factor
+    # encoder_lr = 5e-4 / warmup_factor
+    # decoder_lr = 5e-3 / warmup_factor
+    encoder_lr = 1e-4 / warmup_factor
+    decoder_lr = 1e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
     lr = 1e-4 / warmup_factor
-
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -202,7 +203,7 @@ class CFG:
 
     # loss weights
     weight_bce = 0.5
-    weight_focal = 0.1
+    weight_focal = 0.0  # if 0, not use focal loss (0.5bce + 0.5dice)
     # weight_cls = 0.05
     # weight_cls = 0.01
     # weight_cls = 0.1
@@ -220,7 +221,8 @@ class CFG:
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
-    in_chans: int = 7
+    # in_chans: int = 7
+    in_chans: int = 12
     weights = "imagenet"
     # weights = "advprop"
     aux_params = {
@@ -241,6 +243,7 @@ class CFG:
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
         A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.RandomRotate90(p=0.75),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
@@ -461,7 +464,10 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2 + 1
+    if cfg.in_chans % 2 == 0:
+        end = mid + cfg.in_chans // 2
+    else:
+        end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -697,14 +703,12 @@ class VCNet(nn.Module):
         super().__init__()
 
         self.model = UNETR(
-            in_channels=7,
+            in_channels=in_chans,
             out_channels=num_classes,
             img_size=CFG.tile_size,
             dropout_rate=0.0,
-            spatial_dims=2
+            spatial_dims=2,
         )
-
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -1380,7 +1384,9 @@ def valid_per_epoch(
 
 def get_optimizer(cfg: CFG, model: nn.Module) -> nn.optim.Optimizer:
     if isinstance(model, UNETR):
-        optimizer = optim.AdamW(params=model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        optimizer = optim.AdamW(
+            params=model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+        )
         return optimizer
     else:
         params = [

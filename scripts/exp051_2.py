@@ -5,7 +5,7 @@
 
 DIFF:
 
-- BCE, Stride=tile_size//8, img_size=512
+- BCE, Stride=tile_size//8, img_size=512, chans=12
 
 Reference:
 [1] https://www.kaggle.com/code/yururoi/pytorch-unet-baseline-with-train-code
@@ -44,7 +44,7 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from torch.amp.autocast_mode import autocast
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
-from warmup_scheduler import GradualWarmupScheduller
+from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
 from src.augmentations import cutmix
@@ -113,7 +113,7 @@ def seed_everything(seed: int = 42) -> None:
 class CFG:
     # ================= Global cfg =====================
     exp_name = (
-        "exp051_fold5_Unet++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
+       "exp051_2_fold5_Unet++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
     )
     random_state = 42
     tile_size: int = 512
@@ -125,7 +125,7 @@ class CFG:
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 4
+    batch_size = 20
     use_amp: bool = True
     patience = 10
 
@@ -218,7 +218,7 @@ class CFG:
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
-    in_chans: int = 7
+    in_chans: int = 12
     weights = "imagenet"
     # weights = "advprop"
     aux_params = {
@@ -459,7 +459,7 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2 + 1
+    end = mid + cfg.in_chans // 2
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -1254,7 +1254,7 @@ def train_per_epoch(
                 assert len(pred_mask.shape) == 4, f"Got {pred_mask.shape}"
                 assert pred_mask.shape[1] == 1
 
-                loss_mask = criterion(pred_mask.squeeze(1), target)
+                loss_mask = criterion(pred_mask, target)
                 loss_cls = criterion_cls(pred_label, target_cls)
                 loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss /= cfg.grad_accum
