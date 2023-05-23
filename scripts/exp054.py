@@ -117,9 +117,9 @@ class CFG:
     exp_name = "exp054_fold5_UNET++_effb4_gradualwarm_cutmix_mixup_tile224_slide74"
     random_state = 42
     # tile_size: int = 224
-    tile_size: int = 552
+    tile_size: int = 512
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 3
+    stride: int = tile_size // 8
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -127,8 +127,9 @@ class CFG:
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
     batch_size = 8 * 4
+    valid_batch_size = 8 * 4 * 2
     use_amp: bool = True
-    patience = 10
+    patience = 5
 
     optimizer = "AdamW"
     # optimizer = "RAdam"
@@ -285,8 +286,8 @@ class CFG:
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
+            # tta.HorizontalFlip(),
+            # tta.VerticalFlip(),
             tta.Rotate90(angles=[0, 90, 180, 270]),
             # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
         ]
@@ -1629,7 +1630,7 @@ def get_train_valid_loader(
     )
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=cfg.batch_size,
+        batch_size=cfg.valid_batch_size,
         pin_memory=True,
         shuffle=True,
         drop_last=True,

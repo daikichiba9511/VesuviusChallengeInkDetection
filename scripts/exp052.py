@@ -115,7 +115,7 @@ class CFG:
     # ================= Global cfg =====================
     exp_name = "exp052_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
     random_state = 42
-    tile_size: int = 352
+    tile_size: int = 448
     image_size = (tile_size, tile_size)
     stride: int = tile_size // 8
     num_workers = mp.cpu_count()
@@ -125,9 +125,10 @@ class CFG:
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
     # batch_size = 8 * 3
-    batch_size = 40
+    batch_size = 20
+    valid_batch_size = batch_size * 2
     use_amp: bool = True
-    patience = 10
+    patience = 5
 
     optimizer = "AdamW"
     # optimizer = "RAdam"
@@ -143,7 +144,7 @@ class CFG:
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
-    lr = 1e-4 / warmup_factor
+    lr = 5e-4 / warmup_factor
 
     scheduler = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -244,8 +245,8 @@ class CFG:
         # A.Resize(image_size[0], image_size[1]),
         A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
         A.RandomRotate90(p=0.75),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
+        # A.HorizontalFlip(p=0.5),
+        # A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
@@ -285,8 +286,8 @@ class CFG:
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
+            # tta.HorizontalFlip(),
+            # tta.VerticalFlip(),
             tta.Rotate90(angles=[0, 90, 180, 270]),
             # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
         ]
@@ -1641,7 +1642,7 @@ def get_train_valid_loader(
     )
     valid_loader = DataLoader(
         dataset=valid_dataset,
-        batch_size=cfg.batch_size,
+        batch_size=cfg.valid_batch_size,
         pin_memory=True,
         shuffle=False,
         num_workers=cfg.num_workers,

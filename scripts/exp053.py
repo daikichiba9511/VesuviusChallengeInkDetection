@@ -113,21 +113,22 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp053_fold5_UNET++_effb4_gradualwarm_cutmix_mixup_tile224_slide74"
+    exp_name = "exp053_fold5_UNET++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
     random_state = 42
     # tile_size: int = 224
-    tile_size: int = 552
+    tile_size: int = 356
     image_size = (tile_size, tile_size)
-    stride: int = tile_size // 3
+    stride: int = tile_size // 6
     num_workers = mp.cpu_count()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # ================= Train cfg =====================
     n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch = 15
-    batch_size = 8 * 4
+    batch_size = 8 * 8
+    valid_batch_size = 8 * 8 * 2
     use_amp: bool = True
-    patience = 10
+    patience = 5
 
     optimizer = "AdamW"
     # optimizer = "RAdam"
@@ -136,8 +137,8 @@ class CFG:
     warmup_factor = 10
     # encoder_lr = 3e-6 / warmup_factor
     # decoder_lr = 3e-5 / warmup_factor
-    encoder_lr = 5e-4 / warmup_factor
-    decoder_lr = 5e-3 / warmup_factor
+    encoder_lr = 1e-4 / warmup_factor
+    decoder_lr = 1e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
@@ -211,10 +212,10 @@ class CFG:
     arch: str = "UnetPlusPlus"
     # arch = "UNETR"
     # arch: str = "Unet"
-    # encoder_name: str = "se_resnext50_32x4d"
+    encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
     # encoder_name: str = "timm-efficientnet-b7"
-    encoder_name: str = "timm-efficientnet-b4"
+    # encoder_name: str = "timm-efficientnet-b4"
     # encoder_name: str = "timm-efficientnet-b3"
 
     # encoder_name: str = "tu-efficientnetv2_l"
@@ -236,7 +237,7 @@ class CFG:
     mixup_alpha = 0.1
 
     cutmix = True
-    cutmix_prob = 0.5
+    cutmix_prob = 0.75
     cutmix_alpha = 0.1
 
     train_compose = [
@@ -284,8 +285,8 @@ class CFG:
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
+            # tta.HorizontalFlip(),
+            # tta.VerticalFlip(),
             tta.Rotate90(angles=[0, 90, 180, 270]),
             # tta.Scale(scales=[1.0, 1.5, 2.0, 4.0])
         ]
@@ -1636,7 +1637,7 @@ def get_train_valid_loader(
     )
     valid_loader = DataLoader(
         dataset=valid_dataset,
-        batch_size=cfg.batch_size,
+        batch_size=cfg.valid_batch_size,
         pin_memory=True,
         shuffle=False,
         num_workers=cfg.num_workers,
