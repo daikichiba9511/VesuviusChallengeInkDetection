@@ -113,37 +113,41 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name = "exp053_fold5_UNET++_seresnext50_gradualwarm_cutmix_mixup_tile224_slide74"
-    random_state = 42
+    exp_name: str = (
+        "exp053_fold5_UNET++_seresnext50_gradualwarm_cutmix_mixup_tile512_slide64"
+    )
+    random_state: int = 42
     # tile_size: int = 224
-    tile_size: int = 356
-    image_size = (tile_size, tile_size)
-    stride: int = tile_size // 6
-    num_workers = mp.cpu_count()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    tile_size: int = 512
+    image_size: tuple[int, int] = (tile_size, tile_size)
+    stride: int = tile_size // 8
+    num_workers: int = mp.cpu_count()
+    device: torch.device = torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
 
     # ================= Train cfg =====================
-    n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 15
-    batch_size = 8 * 8
-    valid_batch_size = 8 * 8 * 2
+    n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
+    epoch: int = 15
+    batch_size: int = 30
+    valid_batch_size: int = 60
     use_amp: bool = True
-    patience = 5
+    patience: int = 5
 
-    optimizer = "AdamW"
+    optimizer: str = "AdamW"
     # optimizer = "RAdam"
 
     # optimizer params group lr
-    warmup_factor = 10
+    warmup_factor: int = 10
     # encoder_lr = 3e-6 / warmup_factor
     # decoder_lr = 3e-5 / warmup_factor
-    encoder_lr = 1e-4 / warmup_factor
-    decoder_lr = 1e-3 / warmup_factor
+    encoder_lr: float = 1e-4 / warmup_factor
+    decoder_lr: float = 1e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
     weight_decay = 5e-5
 
-    scheduler = "GradualWarmupScheduler"
+    scheduler: str = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
     # scheduler = "TwoCyclicLR"
     # scheduler = "CosineAnnealingWarmRestarts"
@@ -172,18 +176,16 @@ class CFG:
     # max_lr = 1e-4
 
     # GradualWarmupSchedulerの設定
-    T_max = epoch // 3
+    T_max: int = epoch // 3
 
-    max_grad_norm = 1000.0
+    max_grad_norm: float = 1000.0
 
     # AWP params
-    start_awp = 10
-    start_epoch = 10
-    adv_lr = 1e-7
-    # adv_lr = 1e-6
-    # adv_lr = 1e-5
-    adv_eps = 3
-    adv_step = 1
+    start_awp: int = 10
+    start_epoch: int = 10
+    adv_lr: float = 1e-5
+    adv_eps: int = 3
+    adv_step: int = 1
 
     # when to start soft augmentation
     # if epoch < start_soft_aug_epoch, use hard augmentation
@@ -198,7 +200,7 @@ class CFG:
     # loss = "BCEDiceLoss"
     # loss = "BCEFocalLovaszLoss"
     # loss = "BCEFocalDiceLoss"
-    loss = "TverskyLoss"
+    loss: str = "TverskyLoss"
 
     # loss weights
     # weight_bce = 0.5
@@ -206,7 +208,7 @@ class CFG:
     # weight_cls = 0.05
     # weight_cls = 0.01
     # weight_cls = 0.1
-    weight_cls = 0.2
+    weight_cls: float = 0.2
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
@@ -224,7 +226,7 @@ class CFG:
     in_chans: int = 7
     # weights = "imagenet"
     # weights = "advprop"
-    weights = "noisy-student"
+    weights: str = "noisy-student"
     aux_params = {
         "classes": 1,
         "pooling": "avg",
@@ -232,13 +234,13 @@ class CFG:
     }
 
     # ================= Data cfg =====================
-    mixup = True
-    mixup_prob = 0.5
-    mixup_alpha = 0.1
+    mixup: bool = True
+    mixup_prob: float = 0.5
+    mixup_alpha: float = 0.1
 
-    cutmix = True
-    cutmix_prob = 0.75
-    cutmix_alpha = 0.1
+    cutmix: bool = True
+    cutmix_prob: float = 0.75
+    cutmix_alpha: float = 0.1
 
     train_compose = [
         # A.Resize(image_size[0], image_size[1]),
@@ -256,7 +258,7 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
             ],
-            p=0.4,
+            p=0.5,
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
@@ -281,7 +283,7 @@ class CFG:
     ]
 
     # ================= Test cfg =====================
-    use_tta = True
+    use_tta: bool = True
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [

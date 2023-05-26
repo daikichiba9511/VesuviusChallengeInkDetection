@@ -1,12 +1,11 @@
-"""exp054
+"""exp052
 
-- copy from exp053
+- copy from exp042
 - 2.5D segmentation
 
 DIFF:
 
-# - Tversky loss
-- add rotate augmentations(0, 90, 180, 270)
+- swinUNETR
 
 Reference:
 [1]
@@ -40,6 +39,7 @@ import torch.optim as optim
 import ttach as tta
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
+from monai.networks.nets.swin_unetr import SwinUNETR
 from monai.networks.nets.unetr import UNETR
 from sklearn.metrics import roc_auc_score
 from timm.data.loader import PrefetchLoader
@@ -51,7 +51,7 @@ from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
 from src.augmentations import cutmix
-from src.losses.soft_dice_loss import SoftDiceLossV2
+from src.losses import soft_dice_loss
 
 dbg = logger.debug
 
@@ -114,134 +114,63 @@ def seed_everything(seed: int = 42) -> None:
 # ==============================================================
 @dataclass(frozen=True)
 class CFG:
-    # ================= Global cfg =====================
-    exp_name: str = "exp054_fold5_UNET++_effb4_gradualwarm_cutmix_mixup_tile224_slide74"
+    exp_name: str = (
+        "exp052_3_inchans12_fold5_SwinUNETR_gradualwarm_cutmix_mixup_tile224_slide74"
+    )
     random_state: int = 42
-    # tile_size: int = 224
     tile_size: int = 512
     image_size: tuple[int, int] = (tile_size, tile_size)
     stride: int = tile_size // 8
     num_workers: int = mp.cpu_count()
-    device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    # ================= Train cfg =====================
+    device: torch.device = torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
     n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch: int = 15
-    batch_size: int = 8 * 4
-    valid_batch_size: int = 8 * 4 * 2
+    batch_size: int = 16
+    valid_batch_size: int = 32
     use_amp: bool = True
     patience: int = 5
-
-    # optimizer: str = "AdamW"
     optimizer: str = "RAdam"
-
-    # optimizer params group lr
     warmup_factor: int = 10
-    encoder_lr: float = 5e-4 / warmup_factor
-    decoder_lr: float = 5e-3 / warmup_factor
-    weight_decay: flaot = 5e-5
-
+    encoder_lr: float = 1e-4 / warmup_factor
+    decoder_lr: float = 1e-3 / warmup_factor
+    weight_decay: float = 5e-5
+    lr: float = 1e-4 / warmup_factor
     scheduler: str = "GradualWarmupScheduler"
-    """OneCycleLR, TwoCyclicLR, CosineAnnealingWarmRestarts, CosineLRScheduler, GradualWarmupScheduler"""
-    # CosineAnnealingWarmRestartsの設定
-    # min_lr = 1e-6
-    # """learning rateの下限"""
-    # T_0 = 10
-    # """CosineAnnealingWarmRestartsの周期"""
-    # T_mult = 1
-    # """CosineAnnealingWarmRestartsの周期の増加率"""
-
-    # CosineLRSchedulerの設定
-    # t_initial = 2
-    # """CosineLRSchedulerの周期"""
-    # min_lr = 1e-6
-    # """learning rateの下限"""
-    # warmup_t = 20
-    # """warmupの期間"""
-    # warmup_lr_init = 1e-6
-    # """warmupの初期値"""
-    # warmup_prefix = True
-
-    # OneCycleLR
-    # max_lr = 1e-4
-
-    # GradualWarmupSchedulerの設定
     T_max: int = epoch // 3
-
     max_grad_norm: float = 1000.0
-
-    # AWP params
     start_awp: int = 10
     start_epoch: int = 10
-    adv_lr: float = 1e-5
+    adv_lr: float = 1e-7
     adv_eps: int = 3
     adv_step: int = 1
-
     start_soft_aug_epoch: int = epoch
-    """
-    # when to start soft augmentation
-    # if epoch < start_soft_aug_epoch, use hard augmentation
-    """
-
-    grad_accum = 4
-    """
-    # num step of grad accumulation
-    """
-
-    # ================= Loss cfg =====================
-    loss: str = "TverskyLoss"
-    """
-    loss: str = "BCEWithLogitsLoss"
-    loss: str = "BCETverskyLoss"
-    loss: str = "BCEDiceLoss"
-    loss: str = "BCEFocalLovaszLoss"
-    loss: str = "BCEFocalDiceLoss"
-    """
-
-    # loss weights
-    # weight_bce: float = 0.5
-    # weight_focal: float = 0.1
-    weight_cls = 0.2
-    """
-    weight_cls = 0.05
-    weight_cls = 0.01
-    weight_cls = 0.1
-    """
-
-    # ================= Model =====================
-    arch: str = "UnetPlusPlus"
-    """
-    arch: str = "UNETR"
-    arch: str = "Unet"
-    """
+    """when to start soft augmentation if epoch < start_soft_aug_epoch, use hard augmentation"""
+    grad_accum: int = 4
+    """num step of grad accumulation"""
+    loss: str = "BCESoftDiceLoss"
+    weight_bce: float = 0.5
+    weight_focal: float = 0.0
+    """if 0 with BCEFocalDiceLoss, not use focal loss (0.5bce + 0.5dice)"""
+    weight_cls: float = 0.2
+    # arch: str = "UnetPlusPlus"
+    arch: str = "SwinUNETR"
+    # arch: str = "Unet"
+    # encoder_name: str = "se_resnext50_32x4d"
+    # encoder_name: str = "timm-efficientnet-b1"
+    # encoder_name: str = "timm-efficientnet-b7"
     encoder_name: str = "timm-efficientnet-b4"
-    """
-    encoder_name: str = "timm-efficientnet-b4"
-    encoder_name: str = "se_resnext50_32x4d"
-    encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
-    encoder_name: str = "timm-efficientnet-b3"
-    encoder_name: str = "tu-efficientnetv2_l"
-    encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-    """
-
-
-    in_chans: int = 7
-    weights: str = "noisy-student"
-    """
+    # encoder_name: str = "tu-efficientnetv2_l"
+    # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
+    in_chans: int = 12
     weights: str = "imagenet"
-    weights: str = "advprop"
-    weights: str = "noisy-student"
-    """
-    aux_params: dict[str, int | str | float] = field(
-        default_factory=lambda: {
-            "classes": 1,
-            "pooling": "avg",
-            "dropout": 0.8,
-        }
-    )
+    aux_params = {
+        "classes": 1,
+        "pooling": "avg",
+        "dropout": 0.8,
+    }
 
-    # ================= Data cfg =====================
     mixup: bool = True
     mixup_prob: float = 0.5
     mixup_alpha: float = 0.1
@@ -251,11 +180,11 @@ class CFG:
     cutmix_alpha: float = 0.1
 
     train_compose = [
-        # A.Resize(image_size[0], image_size[1]),
-        A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.Resize(image_size[0], image_size[1]),
+        # A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.RandomRotate90(p=0.75),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.75),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
@@ -266,7 +195,7 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
             ],
-            p=0.4,
+            p=0.5,
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
@@ -290,9 +219,7 @@ class CFG:
         ToTensorV2(transpose_mask=True),
     ]
 
-    # ================= Test cfg =====================
-    use_tta = True
-    # tta_transforms = tta.aliases.d4_transform()
+    use_tta: bool = True
     tta_transforms = tta.Compose(
         [
             # tta.HorizontalFlip(),
@@ -474,7 +401,10 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2 + 1
+    if cfg.in_chans % 2 == 0:
+        end = mid + cfg.in_chans // 2
+    else:
+        end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -708,24 +638,14 @@ class VCNet(nn.Module):
         aux_params: dict | None = None,
     ) -> None:
         super().__init__()
-        if arch == "UNETRA":
-            self.model = UNETR(
-                in_channels=in_chans,
-                out_channels=num_classes,
-                img_size=(CFG.tile_size, CFG.tile_size),
-                dropout_rate=0.0,
-            )
 
-        else:
-            self.model = smp.create_model(
-                arch=arch,
-                encoder_name=encoder_name,
-                encoder_weights=weights,
-                in_channels=in_chans,
-                classes=num_classes,
-                activation=None,
-                aux_params=aux_params,
-            )
+        self.model = SwinUNETR(
+            in_channels=in_chans,
+            out_channels=num_classes,
+            img_size=CFG.tile_size,
+            drop_rate=0.5,
+            spatial_dims=2,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -1267,6 +1187,11 @@ def train_per_epoch(
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
 
+            # (B, C, H, W)
+            # print(f"{image.shape}")
+            # image = image.unsqueeze(2)
+            # print(f"{image.shape}")
+
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 pred_mask = outputs["pred_mask_logits"]
@@ -1383,9 +1308,10 @@ def valid_per_epoch(
 
         # make a whole image prediction
         y_preds = torch.sigmoid(y_preds).to("cpu").detach().numpy()
-        start_idx = step * cfg.batch_size
-        end_idx = start_idx + cfg.batch_size
+        start_idx = step * batch_size
+        end_idx = start_idx + batch_size
         for i, (x1, y1, x2, y2) in enumerate(valid_xyxys[start_idx:end_idx]):
+            assert i < len(y_preds), f"{i}, {len(y_preds)}"
             mask_preds[y1:y2, x1:x2] += y_preds[i].squeeze(0)
             mask_count[y1:y2, x1:x2] += np.ones((cfg.tile_size, cfg.tile_size))
 
@@ -1395,17 +1321,23 @@ def valid_per_epoch(
 
 
 def get_optimizer(cfg: CFG, model: nn.Module) -> nn.optim.Optimizer:
-    params = [
-        {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
-        {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
-    ]
-    if cfg.optimizer == "AdamW":
-        optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
+    if isinstance(model, (UNETR, SwinUNETR)):
+        optimizer = optim.AdamW(
+            params=model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+        )
         return optimizer
-    if cfg.optimizer == "RAdam":
-        optimizer = optim.RAdam(params=params, weight_decay=1e-6)
-        return optimizer
-    raise ValueError(f"{cfg.optimizer} is not supported")
+    else:
+        params = [
+            {"params": model.encoder.parameters(), "lr": cfg.encoder_lr},
+            {"params": model.decoder.parameters(), "lr": cfg.decoder_lr},
+        ]
+        if cfg.optimizer == "AdamW":
+            optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
+            return optimizer
+        if cfg.optimizer == "RAdam":
+            optimizer = optim.RAdam(params=params, weight_decay=1e-6)
+            return optimizer
+        raise ValueError(f"{cfg.optimizer} is not supported")
 
 
 class GradualWarmupSchedulerV2(GradualWarmupScheduler):
@@ -1577,6 +1509,16 @@ def get_loss(cfg: CFG) -> nn.Module:
 
         return _loss
 
+    if cfg.loss == "BCESoftDiceLoss":
+
+        def _loss(y_pred, y_true, alpha=cfg.weight_bce):
+            bce = nn.BCEWithLogitsLoss()
+            softdice = soft_dice_loss.SoftDiceLossV2()
+            loss = alpha * bce(y_pred, y_true) + (1 - alpha) * softdice(y_pred, y_true)
+            return loss
+
+        return _loss
+
     if cfg.loss == "TverskyLoss":
         # alpha: FP weight, beta: FN weight
         loss = smp.losses.TverskyLoss(
@@ -1639,7 +1581,7 @@ def get_train_valid_loader(
     )
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=cfg.valid_batch_size,
+        batch_size=cfg.batch_size,
         pin_memory=True,
         shuffle=True,
         drop_last=True,
@@ -1647,7 +1589,7 @@ def get_train_valid_loader(
     )
     valid_loader = DataLoader(
         dataset=valid_dataset,
-        batch_size=cfg.batch_size,
+        batch_size=cfg.valid_batch_size,
         pin_memory=True,
         shuffle=False,
         num_workers=cfg.num_workers,
@@ -1786,6 +1728,9 @@ def train(cfg: CFG) -> None:
                 logger.info(f"Early stopping at epoch {epoch}")
                 break
 
+            gc.collect()
+            torch.cuda.empty_cache()
+
         early_stopping.save_checkpoint(val_loss=0, model=net, prefix="last-")
 
         mask_preds = torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["preds"]
@@ -1797,6 +1742,8 @@ def train(cfg: CFG) -> None:
         axes[2].imshow((mask_preds >= best_th).astype(np.uint8))
         axes[2].set_title("Pred with threshold")
         fig.savefig(OUTPUT_DIR / cfg.exp_name / f"pred_mask_fold{fold}.png")
+        gc.collect()
+        torch.cuda.empty_cache()
 
     best_dices = [
         torch.load(CP_DIR / cfg.exp_name / f"best_fold{fold}.pth")["best_dice"]
@@ -2105,7 +2052,7 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
 # =======================================================================
 def main() -> None:
     cfg = CFG()
-    logger.info(f"{cfg.__dict__}")
+    logger.info(f"{asdict(cfg)}")
     seed_everything(seed=cfg.random_state)
     (OUTPUT_DIR / cfg.exp_name).mkdir(parents=True, exist_ok=True)
     start_time = datetime.now()

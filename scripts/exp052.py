@@ -22,7 +22,7 @@ import os
 import pickle
 import random
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -50,6 +50,7 @@ from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
 from src.augmentations import cutmix
+from src.losses import soft_dice_loss
 
 dbg = logger.debug
 
@@ -112,141 +113,77 @@ def seed_everything(seed: int = 42) -> None:
 # ==============================================================
 @dataclass(frozen=True)
 class CFG:
-    # ================= Global cfg =====================
-    exp_name = "exp052_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
-    random_state = 42
-    tile_size: int = 448
-    image_size = (tile_size, tile_size)
+    exp_name: str = (
+        "exp052_2_inchans12_fold5_UNETR_gradualwarm_cutmix_mixup_tile224_slide74"
+    )
+    random_state: int = 42
+    tile_size: int = 512
+    image_size: tuple[int, int] = (tile_size, tile_size)
     stride: int = tile_size // 8
-    num_workers = mp.cpu_count()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    # ================= Train cfg =====================
-    n_fold = 5  # [1, 2_1, 2_2, 2_3, 3]
-    epoch = 15
-    # batch_size = 8 * 3
-    batch_size = 20
-    valid_batch_size = batch_size * 2
+    num_workers: int = mp.cpu_count()
+    device: torch.device = torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
+    n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
+    epoch: int = 15
+    batch_size: int = 8
+    valid_batch_size: int = 16
     use_amp: bool = True
-    patience = 5
-
-    optimizer = "AdamW"
-    # optimizer = "RAdam"
-
-    # optimizer params group lr
-    warmup_factor = 10
-    # encoder_lr = 3e-6 / warmup_factor
-    # decoder_lr = 3e-5 / warmup_factor
-    # encoder_lr = 5e-4 / warmup_factor
-    # decoder_lr = 5e-3 / warmup_factor
-    encoder_lr = 1e-4 / warmup_factor
-    decoder_lr = 1e-3 / warmup_factor
-    # encoder_lr = 1e-3 / warmup_factor
-    # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 5e-5
-    lr = 5e-4 / warmup_factor
-
-    scheduler = "GradualWarmupScheduler"
-    # scheduler = "OneCycleLR"
-    # scheduler = "TwoCyclicLR"
-    # scheduler = "CosineAnnealingWarmRestarts"
-    # scheduler = "CosineLRScheduler"  # timm
-
-    # CosineAnnealingWarmRestartsの設定
-    # min_lr = 1e-6
-    # """learning rateの下限"""
-    # T_0 = 10
-    # """CosineAnnealingWarmRestartsの周期"""
-    # T_mult = 1
-    # """CosineAnnealingWarmRestartsの周期の増加率"""
-
-    # CosineLRSchedulerの設定
-    # t_initial = 2
-    # """CosineLRSchedulerの周期"""
-    # min_lr = 1e-6
-    # """learning rateの下限"""
-    # warmup_t = 20
-    # """warmupの期間"""
-    # warmup_lr_init = 1e-6
-    # """warmupの初期値"""
-    # warmup_prefix = True
-
-    # OneCycleLR
-    # max_lr = 1e-4
-
-    # GradualWarmupSchedulerの設定
-    T_max = epoch // 3
-
-    max_grad_norm = 1000.0
-
-    # AWP params
-    start_awp = 10
-    start_epoch = 10
-    adv_lr = 1e-7
-    # adv_lr = 1e-6
-    # adv_lr = 1e-5
-    adv_eps = 3
-    adv_step = 1
-
-    # when to start soft augmentation
-    # if epoch < start_soft_aug_epoch, use hard augmentation
+    patience: int = 5
+    optimizer: str = "RAdam"
+    warmup_factor: int = 10
+    encoder_lr: float = 1e-4 / warmup_factor
+    decoder_lr: float = 1e-3 / warmup_factor
+    weight_decay: float = 5e-5
+    lr: float = 1e-4 / warmup_factor
+    scheduler: str = "GradualWarmupScheduler"
+    T_max: int = epoch // 3
+    max_grad_norm: float = 1000.0
+    start_awp: int = 10
+    start_epoch: int = 10
+    adv_lr: float = 1e-7
+    adv_eps: int = 3
+    adv_step: int = 1
     start_soft_aug_epoch: int = epoch
-
-    # num step of grad accumulation
-    grad_accum = 4
-
-    # ================= Loss cfg =====================
-    # loss = "BCEWithLogitsLoss"
-    # loss = "BCETverskyLoss"
-    # loss = "BCEDiceLoss"
-    # loss = "BCEFocalLovaszLoss"
-    loss = "BCEFocalDiceLoss"
-
-    # loss weights
-    weight_bce = 0.5
-    weight_focal = 0.0  # if 0, not use focal loss (0.5bce + 0.5dice)
-    # weight_cls = 0.05
-    # weight_cls = 0.01
-    # weight_cls = 0.1
-    weight_cls = 0.2
-
-    # ================= Model =====================
+    """when to start soft augmentation if epoch < start_soft_aug_epoch, use hard augmentation"""
+    grad_accum: int = 4
+    """num step of grad accumulation"""
+    loss: str = "BCESoftDiceLoss"
+    weight_bce: float = 0.5
+    weight_focal: float = 0.0
+    """if 0 with BCEFocalDiceLoss, not use focal loss (0.5bce + 0.5dice)"""
+    weight_cls: float = 0.2
     # arch: str = "UnetPlusPlus"
-    arch = "UNETR"
+    arch: str = "UNETR"
     # arch: str = "Unet"
     # encoder_name: str = "se_resnext50_32x4d"
     # encoder_name: str = "timm-efficientnet-b1"
     # encoder_name: str = "timm-efficientnet-b7"
     encoder_name: str = "timm-efficientnet-b4"
-
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-
-    # in_chans: int = 7
-    in_chans: int = 12
-    weights = "imagenet"
-    # weights = "advprop"
+    in_chans: int = 16
+    weights: str = "imagenet"
     aux_params = {
         "classes": 1,
         "pooling": "avg",
         "dropout": 0.8,
     }
 
-    # ================= Data cfg =====================
-    mixup = True
-    mixup_prob = 0.5
-    mixup_alpha = 0.1
+    mixup: bool = True
+    mixup_prob: float = 0.5
+    mixup_alpha: float = 0.1
 
-    cutmix = True
-    cutmix_prob = 0.5
-    cutmix_alpha = 0.1
+    cutmix: bool = True
+    cutmix_prob: float = 0.5
+    cutmix_alpha: float = 0.1
 
     train_compose = [
-        # A.Resize(image_size[0], image_size[1]),
-        A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.Resize(image_size[0], image_size[1]),
+        # A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
         A.RandomRotate90(p=0.75),
-        # A.HorizontalFlip(p=0.5),
-        # A.VerticalFlip(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
@@ -257,7 +194,7 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
             ],
-            p=0.4,
+            p=0.5,
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
@@ -281,9 +218,7 @@ class CFG:
         ToTensorV2(transpose_mask=True),
     ]
 
-    # ================= Test cfg =====================
-    use_tta = True
-    # tta_transforms = tta.aliases.d4_transform()
+    use_tta: bool = True
     tta_transforms = tta.Compose(
         [
             # tta.HorizontalFlip(),
@@ -707,7 +642,7 @@ class VCNet(nn.Module):
             in_channels=in_chans,
             out_channels=num_classes,
             img_size=CFG.tile_size,
-            dropout_rate=0.0,
+            dropout_rate=0.5,
             spatial_dims=2,
         )
 
@@ -1372,9 +1307,10 @@ def valid_per_epoch(
 
         # make a whole image prediction
         y_preds = torch.sigmoid(y_preds).to("cpu").detach().numpy()
-        start_idx = step * cfg.batch_size
-        end_idx = start_idx + cfg.batch_size
+        start_idx = step * batch_size
+        end_idx = start_idx + batch_size
         for i, (x1, y1, x2, y2) in enumerate(valid_xyxys[start_idx:end_idx]):
+            assert i < len(y_preds), f"{i}, {len(y_preds)}"
             mask_preds[y1:y2, x1:x2] += y_preds[i].squeeze(0)
             mask_count[y1:y2, x1:x2] += np.ones((cfg.tile_size, cfg.tile_size))
 
@@ -1569,6 +1505,16 @@ def get_loss(cfg: CFG) -> nn.Module:
                 + beta * lobasz_loss(y_pred, y_true)
                 + (1 - alpha - beta) * dice_loss(y_pred, y_true)
             )
+
+        return _loss
+
+    if cfg.loss == "BCESoftDiceLoss":
+
+        def _loss(y_pred, y_true, alpha=cfg.weight_bce):
+            bce = nn.BCEWithLogitsLoss()
+            softdice = soft_dice_loss.SoftDiceLossV2()
+            loss = alpha * bce(y_pred, y_true) + (1 - alpha) * softdice(y_pred, y_true)
+            return loss
 
         return _loss
 
@@ -2105,7 +2051,7 @@ def test(cfg: CFG, threshold: float = 0.4) -> pd.DataFrame:
 # =======================================================================
 def main() -> None:
     cfg = CFG()
-    logger.info(f"{cfg.__dict__}")
+    logger.info(f"{asdict(cfg)}")
     seed_everything(seed=cfg.random_state)
     (OUTPUT_DIR / cfg.exp_name).mkdir(parents=True, exist_ok=True)
     start_time = datetime.now()

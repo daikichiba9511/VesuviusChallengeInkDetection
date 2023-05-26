@@ -1,12 +1,11 @@
-"""exp054
+"""exp053_2
 
 - copy from exp053
 - 2.5D segmentation
 
 DIFF:
 
-# - Tversky loss
-- add rotate augmentations(0, 90, 180, 270)
+- to check RandomResizedCrop
 
 Reference:
 [1]
@@ -23,7 +22,7 @@ import os
 import pickle
 import random
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -51,7 +50,6 @@ from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
 from src.augmentations import cutmix
-from src.losses.soft_dice_loss import SoftDiceLossV2
 
 dbg = logger.debug
 
@@ -115,7 +113,9 @@ def seed_everything(seed: int = 42) -> None:
 @dataclass(frozen=True)
 class CFG:
     # ================= Global cfg =====================
-    exp_name: str = "exp054_fold5_UNET++_effb4_gradualwarm_cutmix_mixup_tile224_slide74"
+    exp_name: str = (
+        "exp053_2_fold5_UNET++_seresnext50_gradualwarm_cutmix_mixup_tile512_slide64"
+    )
     random_state: int = 42
     # tile_size: int = 224
     tile_size: int = 512
@@ -127,8 +127,8 @@ class CFG:
     # ================= Train cfg =====================
     n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch: int = 15
-    batch_size: int = 8 * 4
-    valid_batch_size: int = 8 * 4 * 2
+    batch_size: int = 30
+    valid_batch_size: int = 60
     use_amp: bool = True
     patience: int = 5
 
@@ -137,12 +137,20 @@ class CFG:
 
     # optimizer params group lr
     warmup_factor: int = 10
-    encoder_lr: float = 5e-4 / warmup_factor
-    decoder_lr: float = 5e-3 / warmup_factor
-    weight_decay: flaot = 5e-5
+    # encoder_lr = 3e-6 / warmup_factor
+    # decoder_lr = 3e-5 / warmup_factor
+    encoder_lr: float = 1e-4 / warmup_factor
+    decoder_lr: float = 1e-3 / warmup_factor
+    # encoder_lr = 1e-3 / warmup_factor
+    # decoder_lr = 1e-2 / warmup_factor
+    weight_decay: float = 5e-5
 
     scheduler: str = "GradualWarmupScheduler"
-    """OneCycleLR, TwoCyclicLR, CosineAnnealingWarmRestarts, CosineLRScheduler, GradualWarmupScheduler"""
+    # scheduler = "OneCycleLR"
+    # scheduler = "TwoCyclicLR"
+    # scheduler = "CosineAnnealingWarmRestarts"
+    # scheduler = "CosineLRScheduler"  # timm
+
     # CosineAnnealingWarmRestartsの設定
     # min_lr = 1e-6
     # """learning rateの下限"""
@@ -167,7 +175,6 @@ class CFG:
 
     # GradualWarmupSchedulerの設定
     T_max: int = epoch // 3
-
     max_grad_norm: float = 1000.0
 
     # AWP params
@@ -177,69 +184,48 @@ class CFG:
     adv_eps: int = 3
     adv_step: int = 1
 
-    start_soft_aug_epoch: int = epoch
-    """
     # when to start soft augmentation
     # if epoch < start_soft_aug_epoch, use hard augmentation
-    """
+    start_soft_aug_epoch: int = epoch
 
-    grad_accum = 4
-    """
     # num step of grad accumulation
-    """
+    grad_accum: int = 4
 
     # ================= Loss cfg =====================
-    loss: str = "TverskyLoss"
-    """
-    loss: str = "BCEWithLogitsLoss"
-    loss: str = "BCETverskyLoss"
-    loss: str = "BCEDiceLoss"
-    loss: str = "BCEFocalLovaszLoss"
-    loss: str = "BCEFocalDiceLoss"
-    """
+    # loss = "BCEWithLogitsLoss"
+    # loss = "BCETverskyLoss"
+    # loss = "BCEDiceLoss"
+    # loss = "BCEFocalLovaszLoss"
+    # loss = "BCEFocalDiceLoss"
+    loss: int = "TverskyLoss"
 
     # loss weights
-    # weight_bce: float = 0.5
-    # weight_focal: float = 0.1
-    weight_cls = 0.2
-    """
-    weight_cls = 0.05
-    weight_cls = 0.01
-    weight_cls = 0.1
-    """
+    # weight_bce = 0.5
+    # weight_focal = 0.1
+    weight_cls: float = 0.2
 
     # ================= Model =====================
     arch: str = "UnetPlusPlus"
-    """
-    arch: str = "UNETR"
-    arch: str = "Unet"
-    """
-    encoder_name: str = "timm-efficientnet-b4"
-    """
-    encoder_name: str = "timm-efficientnet-b4"
+    # arch = "UNETR"
+    # arch: str = "Unet"
     encoder_name: str = "se_resnext50_32x4d"
-    encoder_name: str = "timm-efficientnet-b1"
-    encoder_name: str = "timm-efficientnet-b7"
-    encoder_name: str = "timm-efficientnet-b3"
-    encoder_name: str = "tu-efficientnetv2_l"
-    encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
-    """
+    # encoder_name: str = "timm-efficientnet-b1"
+    # encoder_name: str = "timm-efficientnet-b7"
+    # encoder_name: str = "timm-efficientnet-b4"
+    # encoder_name: str = "timm-efficientnet-b3"
 
+    # encoder_name: str = "tu-efficientnetv2_l"
+    # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
     in_chans: int = 7
+    # weights = "imagenet"
+    # weights = "advprop"
     weights: str = "noisy-student"
-    """
-    weights: str = "imagenet"
-    weights: str = "advprop"
-    weights: str = "noisy-student"
-    """
-    aux_params: dict[str, int | str | float] = field(
-        default_factory=lambda: {
-            "classes": 1,
-            "pooling": "avg",
-            "dropout": 0.8,
-        }
-    )
+    aux_params = {
+        "classes": 1,
+        "pooling": "avg",
+        "dropout": 0.8,
+    }
 
     # ================= Data cfg =====================
     mixup: bool = True
@@ -247,15 +233,15 @@ class CFG:
     mixup_alpha: float = 0.1
 
     cutmix: bool = True
-    cutmix_prob: float = 0.5
+    cutmix_prob: float = 0.75
     cutmix_alpha: float = 0.1
 
     train_compose = [
-        # A.Resize(image_size[0], image_size[1]),
-        A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.Resize(image_size[0], image_size[1]),
+        # A.RandomResizedCrop(image_size[0], image_size[1], scale=(0.8, 1.2)),
+        A.RandomRotate90(p=0.75),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.75),
         A.RandomBrightnessContrast(p=0.75),
         A.RandomContrast(limit=0.2, p=0.75),
         # A.CLAHE(p=0.75),
@@ -266,7 +252,7 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
             ],
-            p=0.4,
+            p=0.5,
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
@@ -291,7 +277,7 @@ class CFG:
     ]
 
     # ================= Test cfg =====================
-    use_tta = True
+    use_tta: bool = True
     # tta_transforms = tta.aliases.d4_transform()
     tta_transforms = tta.Compose(
         [
@@ -1639,7 +1625,7 @@ def get_train_valid_loader(
     )
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=cfg.valid_batch_size,
+        batch_size=cfg.batch_size,
         pin_memory=True,
         shuffle=True,
         drop_last=True,
@@ -1647,7 +1633,7 @@ def get_train_valid_loader(
     )
     valid_loader = DataLoader(
         dataset=valid_dataset,
-        batch_size=cfg.batch_size,
+        batch_size=cfg.valid_batch_size,
         pin_memory=True,
         shuffle=False,
         num_workers=cfg.num_workers,
