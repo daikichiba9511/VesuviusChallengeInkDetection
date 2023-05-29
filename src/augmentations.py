@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 
-def rand_bbox(size: Container[int], lam: float):
+def rand_bbox(size: Container[int], lam: float) -> tuple[int, int, int, int]:
     """CutMixのbboxを作成する
 
     Args:
@@ -122,3 +122,21 @@ def mixup(
     # (N, 1, H, W)
     mixed_labels = lam * labels + (1 - lam) * labels[rand_idx, ...]
     return mixed_image, mixed_labels, lam, rand_idx
+
+
+def label_noise(images: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, np.int8]:
+    """add label noise
+    Args:
+        images: (N, C, H, W)
+        mask: (N, H, W)
+
+    Returns:
+        images: (N, C, H, W)
+        mask: (N, H, W)
+        k: 90度回転した回数
+    """
+    k = np.random.choice(4)
+    B, C, H, W = mask.shape
+    rotated_mask = torch.rot90(mask, k=k, dims=[2, 3]).reshape(B, C, H, W)
+    assert mask.shape == rotated_mask.shape, f"mask: {mask.shape}, rotated: {rotated_mask.shape}"
+    return images, rotated_mask, k

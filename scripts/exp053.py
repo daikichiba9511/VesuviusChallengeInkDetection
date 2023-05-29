@@ -22,7 +22,7 @@ import os
 import pickle
 import random
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -49,18 +49,20 @@ from tqdm.auto import tqdm
 from warmup_scheduler import GradualWarmupScheduler
 
 import wandb
-from src.augmentations import cutmix
+
+IS_TRAIN = not Path("/kaggle/working").exists()
+MAKE_SUB: bool = False
+SKIP_TRAIN = False
+
+if IS_TRAIN:
+    from src.augmentations import cutmix
+    from src.train_utils import freeze_model
 
 dbg = logger.debug
 
 # ssl._create_default_https_context = ssl._create_unverified_context
 # torchvision.disable_beta_transforms_warning()
 warnings.simplefilter("ignore")
-
-
-IS_TRAIN = not Path("/kaggle/working").exists()
-MAKE_SUB: bool = False
-SKIP_TRAIN = False
 
 logger.info(
     f"Meta Config: IS_TRAIN={IS_TRAIN},"
@@ -129,13 +131,13 @@ class CFG:
     # ================= Train cfg =====================
     n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch: int = 15
-    batch_size: int = 30
-    valid_batch_size: int = 60
+    batch_size: int = 16
+    valid_batch_size: int = 32
     use_amp: bool = True
     patience: int = 5
 
-    optimizer: str = "AdamW"
-    # optimizer = "RAdam"
+    # optimizer: str = "AdamW"
+    optimizer = "RAdam"
 
     # optimizer params group lr
     warmup_factor: int = 10
@@ -145,7 +147,7 @@ class CFG:
     decoder_lr: float = 1e-3 / warmup_factor
     # encoder_lr = 1e-3 / warmup_factor
     # decoder_lr = 1e-2 / warmup_factor
-    weight_decay = 5e-5
+    weight_decay: float = 5e-5
 
     scheduler: str = "GradualWarmupScheduler"
     # scheduler = "OneCycleLR"
@@ -192,7 +194,11 @@ class CFG:
     start_soft_aug_epoch: int = epoch
 
     # num step of grad accumulation
-    grad_accum = 4
+    grad_accum: int = 4
+
+    start_freeze_model_epoch: int = 5
+    """when to start freeze model"""
+    freeze_keys: list[str] = field(default_factory=lambda: ["encoder"])
 
     # ================= Loss cfg =====================
     # loss = "BCEWithLogitsLoss"
@@ -223,14 +229,14 @@ class CFG:
     # encoder_name: str = "tu-efficientnetv2_l"
     # encoder_name: str = "tu-tf_efficientnetv2_m_in21ft1k"
 
-    in_chans: int = 7
-    # weights = "imagenet"
+    in_chans: int = 6
+    weights = "imagenet"
     # weights = "advprop"
-    weights: str = "noisy-student"
+    # weights: str = "noisy-student"
     aux_params = {
         "classes": 1,
         "pooling": "avg",
-        "dropout": 0.8,
+        "dropout": 0.5,
     }
 
     # ================= Data cfg =====================
@@ -466,7 +472,10 @@ def read_image_mask(cfg: CFG, fragment_id: int) -> tuple[np.ndarray, np.ndarray]
 
     mid = 65 // 2
     start = mid - cfg.in_chans // 2
-    end = mid + cfg.in_chans // 2 + 1
+    if cfg.in_chans % 2 == 0:
+        end = mid + cfg.in_chans // 2
+    else:
+        end = mid + cfg.in_chans // 2 + 1
     idxs = range(start, end)
     for i in idxs:
         image = cv2.imread(
@@ -727,10 +736,10 @@ class VCNet(nn.Module):
             masks: (N, 1, H, W)
             labels: (N, 1)
         """
-        masks = self.model(x)
+        masks, labels = self.model(x)
         return {
             "pred_mask_logits": masks,
-            # "pred_label_logits": labels,
+            "pred_label_logits": labels,
         }
 
 
@@ -1259,13 +1268,16 @@ def train_per_epoch(
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
 
+            if epoch > cfg.start_freaze_model_epoch:
+                freeze_model(model, freeze_keys=cfg.freeze_keys)
+
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(image)
                 pred_mask = outputs["pred_mask_logits"]
-                # pred_label = outputs["pred_label_logits"]
+                pred_label = outputs["pred_label_logits"]
                 loss_mask = criterion(pred_mask, target)
-                # loss_cls = criterion_cls(pred_label, target_cls)
-                # loss = loss_mask + (cfg.weight_cls * loss_cls)
+                loss_cls = criterion_cls(pred_label, target_cls)
+                loss = loss_mask + (cfg.weight_cls * loss_cls)
                 loss = loss_mask
                 loss /= cfg.grad_accum
 

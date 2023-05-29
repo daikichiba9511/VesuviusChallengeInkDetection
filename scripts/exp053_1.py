@@ -122,13 +122,15 @@ class CFG:
     image_size: tuple[int, int] = (tile_size, tile_size)
     stride: int = tile_size // 8
     num_workers: int = mp.cpu_count()
-    device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device: torch.device = torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
 
     # ================= Train cfg =====================
     n_fold: int = 5  # [1, 2_1, 2_2, 2_3, 3]
     epoch: int = 15
-    batch_size: int = 16
-    valid_batch_size: int = 32
+    batch_size: int = 8
+    valid_batch_size: int = 16
     use_amp: bool = True
     patience: int = 5
 
