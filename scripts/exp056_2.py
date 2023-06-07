@@ -1,5 +1,6 @@
-"""exp055
-新しいbaselineを作る
+"""exp056_2
+
+decoderを足す
 
 Ref:
 [1] https://www.kaggle.com/code/hengck23/lb0-68-one-fold-stacked-unet
@@ -78,7 +79,7 @@ else:
 
 @dataclass
 class CFG:
-    exp_name: str = "exp055_stackedUnet"
+    exp_name: str = "exp056_2_11_stackedUnet"
     mode = ["train", "test"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random_state: int = 42
@@ -105,7 +106,8 @@ class CFG:
     weight_decay: float = 1e-6
 
     use_diff_lr: bool = False
-    lr: float = 1e-5
+    lr: float = 3e-5
+    # lr: float = 1e-5
     # encoder_lr: float = 1e-4
     # decoder_lr: float = 1e-3
 
@@ -117,7 +119,7 @@ class CFG:
 
     max_grad_norm: float = 1000.0
 
-    start_awp_epoch: int = 10
+    start_awp_epoch: int = 12
     """epoch > start_awpでawpを使う"""
     start_epoch: int = 10
     adv_lr: float = 5e-7
@@ -180,19 +182,31 @@ class CFG:
                 A.RandomResizedCrop(crop_size, crop_size, scale=(0.5, 1.8), ratio=(0.5, 1.5)),
             ],
         ),
-        A.RandomRotate90(always_apply=True),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.5),
-        A.RandomContrast(limit=0.5, p=0.5),
+        A.OneOf(
+            [
+                A.RandomRotate90(always_apply=True),
+                A.ShiftScaleRotate(
+                    shift_limit=0.2,
+                    scale_limit=(0.5, 1.8),
+                    rotate_limit=360,
+                    p=0.5,
+                ),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+            ]
+        ),
+        # A.OneOf([
+        # A.RandomBrightnessContrast(p=0.5),
+        # A.RandomContrast(limit=0.5, p=0.5),
+        # ])
+        A.OneOf(
+            [
+                A.RandomBrightnessContrast(p=0.5),
+                A.RandomContrast(limit=0.5, p=0.5),
+            ]
+        ),
         # A.Downscale(scale_min=0.5, scale_max=0.95, p=0.5),
         # A.CLAHE(p=0.75),
-        A.ShiftScaleRotate(
-            shift_limit=0.2,
-            scale_limit=(0.5, 1.8),
-            rotate_limit=360,
-            p=0.5,
-        ),
         A.OneOf(
             [
                 A.GaussNoise(var_limit=[10, 50]),
@@ -203,24 +217,34 @@ class CFG:
         ),
         # 歪み系
         # A.OpticalDistortion(p=0.5),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-        A.CoarseDropout(
-            max_holes=2,
-            max_width=int(crop_size * 0.4),
-            max_height=int(crop_size * 0.6),
-            fill_value=0,
-            p=0.5,
+        A.OneOf(
+            [
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+                A.ElasticTransform(),
+            ]
         ),
-        # A.ChannelShuffle(p=0.5),
-        # A.ChannelDropout(p=0.5),
-        A.Cutout(
-            p=0.5,
-            num_holes=2,
-            max_w_size=int(crop_size * 0.4),
-            max_h_size=int(crop_size * 0.6),
-            fill_value=0,
+        A.OneOf(
+            [
+                A.CoarseDropout(
+                    max_holes=1,
+                    max_width=int(crop_size * 0.4),
+                    max_height=int(crop_size * 0.6),
+                    fill_value=0,
+                    p=0.5,
+                ),
+                # A.ChannelShuffle(p=0.5),
+                # A.ChannelDropout(p=0.5),
+                A.Cutout(
+                    p=0.5,
+                    num_holes=2,
+                    max_h_size=int(crop_size * 0.6),
+                    max_w_size=int(crop_size * 0.4),
+                    fill_value=0,
+                ),
+            ]
         ),
         A.Normalize(mean=[0] * fragment_depth, std=[1] * fragment_depth),
+        # A.RandomCrop(crop_size, crop_size),
         ToTensorV2(transpose_mask=True),
     ]
     use_tta: bool = True
@@ -418,6 +442,8 @@ def get_train_valid_split(
     valid_masks = []
     valid_xyxys = []
 
+    n_split_fragment = 2
+
     for fragment_id in range(1, 4):
         # image: (h, w, in_chans)
         # mask: (h, w)
@@ -426,11 +452,16 @@ def get_train_valid_split(
 
         x1_list = list(range(0, mask.shape[1] - crop_size + 1, stride))
         y1_list = list(range(0, mask.shape[0] - crop_size + 1, stride))
-        fragment_id_2_split_range = np.arange(0, mask.shape[0], mask.shape[0] // 3)
+        fragment_id_2_split_range = np.arange(0, mask.shape[0], mask.shape[0] // n_split_fragment)
+
+        # if n_split == 3:
         # fragment_id_2_split_range = [0, 5002, 10004, 15006]
         # valid_id = 2 -> 0 ~ 5002
         # valid_id = 3 -> 5002 ~ 10004
         # valid_id = 4 -> 10004 ~ 15006
+
+        # if n_split == 2:
+        # fragment_id_2_split_range = [0, 7503, 15006]
 
         for y1 in y1_list:
             for x1 in x1_list:
@@ -448,14 +479,10 @@ def get_train_valid_split(
                     and valid_id == 2
                     and fragment_id_2_split_range[0] <= y2 < fragment_id_2_split_range[1]
                 )
-                is_fold3 = (
-                    fragment_id == 2
-                    and valid_id == 3
-                    and fragment_id_2_split_range[1] <= y2 < fragment_id_2_split_range[2]
-                )
-                is_fold4 = fragment_id == 2 and valid_id == 4 and fragment_id_2_split_range[2] <= y2
-                is_fold5 = fragment_id == 3 and valid_id == 5
-                if is_fold1 or is_fold2 or is_fold3 or is_fold4 or is_fold5:
+                is_fold3 = fragment_id == 2 and valid_id == 3 and fragment_id_2_split_range[1] <= y2
+                # is_fold4 = fragment_id == 2 and valid_id == 4 and fragment_id_2_split_range[2] <= y2
+                is_fold4 = fragment_id == 3 and valid_id == 5
+                if is_fold1 or is_fold2 or is_fold3 or is_fold4:
                     valid_images.append(image[y1:y2, x1:x2])
                     valid_masks.append(mask[y1:y2, x1:x2, None])
                     valid_xyxys.append([x1, y1, x2, y2])
@@ -602,8 +629,9 @@ class SmpUnetDecorder(nn.Module):
         in_channels = [
             in_channel,
         ] + out_channels[:-1]
-        assert len(in_channels) == len(out_channels), f"{len(in_channels)} != {len(out_channels)}"
-        assert len(skip_channels) == len(out_channels), f"{len(skip_channels)} != {len(out_channels)}"
+        # assert len(in_channels) == len(out_channels), f"{len(in_channels)} != {len(out_channels)}"
+        # assert len(skip_channels) == len(out_channels), f"{len(skip_channels)} != {len(out_channels)}"
+        # [layer4, layer3, layer2, layer1, layer0]
         self.blocks = nn.ModuleList(
             [
                 DecoderBlock(
@@ -616,6 +644,19 @@ class SmpUnetDecorder(nn.Module):
                 for in_chan, skip_chan, out_chan in zip(in_channels, skip_channels, out_channels)
             ]
         )
+        self.last_block = DecoderBlock(
+            in_channels=out_channels[-1],
+            skip_channels=0,
+            out_channels=out_channels[-1] // 2,
+            use_batchnorm=True,
+            attention_type=None,
+        )
+        # print(self.blocks)
+        # if len(self.blocks) != 5:
+        #     raise ValueError(
+        #         f"Expected len(self.blocks) == 5, but got {len(self.blocks)}"
+        #         + f", in_channels: {in_channels}, out_channels: {out_channels}, skip_channels: {skip_channels}"
+        #     )
 
     def forward(self, feature: torch.Tensor, skip: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -628,11 +669,16 @@ class SmpUnetDecorder(nn.Module):
             decode (list[torch.Tensor]): [(batch_size, out_channels[i], height, width), ...]
         """
         dense = self.center(feature)
+        # [crop_size, crop_size/2, crop_size/4, crop_size/8, crop_size/16]
         decode = []
         for i, block in enumerate(self.blocks):
             dense = block(dense, skip[i])
+            # print("i:", i, "dense:", dense.shape)
             decode.append(dense)
-        last = dense
+
+        last = self.last_block(decode[-1], skip=None)
+        # print("decode[-1]:", decode[-1].shape)
+        # print(last.shape)
         return last, decode
 
 
@@ -642,14 +688,14 @@ class VCNet(nn.Module):
         self.crop_depth = cfg.crop_depth
         self.pretrained = cfg.pretrained
         self.volume_depth = cfg.fragment_depth
-        self.volumne_slice_starts = list(range(0, self.volume_depth - self.crop_depth + 1, 2))
-        logger.info(f"{volume_slice_starts}")
 
         self.output_type = ["inference", "loss"]
 
         conv_dim = 64
         encoder1_dims = [conv_dim, 64, 128, 256, 512]
         decoder1_dims = [256, 128, 64, 64]
+        # encoder1_dims = [64, 64, 128, 256, 512]
+        # decoder1_dims = [256, 128, 64, 64]
 
         self.encoder1 = resnet34d(pretrained=self.pretrained, in_chans=self.crop_depth)
         self.decoder1 = SmpUnetDecorder(
@@ -659,6 +705,7 @@ class VCNet(nn.Module):
         )
 
         # pool attention weights
+        # [32, 32, 64, 128, 256, 512]
         self.weights1 = nn.ModuleList(
             [
                 nn.Sequential(
@@ -668,8 +715,11 @@ class VCNet(nn.Module):
                 for dim in encoder1_dims
             ]
         )
-        self.logit1 = nn.Conv2d(in_channels=decoder1_dims[-1], out_channels=1, kernel_size=1)
+        # channel方向に集約
+        self.logit1 = nn.Conv2d(in_channels=decoder1_dims[-1] // 2, out_channels=1, kernel_size=1)
 
+        # encoder2_dims = [64, 64, 128, 256, 512]
+        # decoder2_dims = [256, 128, 64, 64]
         encoder2_dims = [64, 128, 256, 512]
         decoder2_dims = [128, 64, 32]
         self.encoder2 = resnet10t(pretrained=self.pretrained, in_chans=decoder1_dims[-1])
@@ -678,7 +728,7 @@ class VCNet(nn.Module):
             skip_channels=encoder2_dims[:-1][::-1],
             out_channels=decoder2_dims,
         )
-        self.logit2 = nn.Conv2d(decoder2_dims[-1], 1, kernel_size=1)
+        self.logit2 = nn.Conv2d(decoder2_dims[-1] // 2, 1, kernel_size=1)
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
@@ -702,7 +752,7 @@ class VCNet(nn.Module):
         """
         volume = batch["volume"]
         B, C, H, W = volume.shape
-        vv = [volume[:, i : i + self.crop_depth] for i in self.volumne_slice_starts]
+        vv = [volume[:, i : i + self.crop_depth] for i in range(0, self.volume_depth - self.crop_depth + 1, 2)]
         K = len(vv)
         x = torch.cat(vv, dim=0)
 
@@ -731,13 +781,17 @@ class VCNet(nn.Module):
 
         for i in range(len(encoder)):
             e = encoder[i]
+            # e = F.avg_pool2d(e, kernel_size=4, stride=4)
             f = self.weights1[i](e)
             _, c, h, w = e.shape
             f = rearrange(f, "(K B) c h w -> B K c h w", K=K, B=B, h=h, w=w)
             e = rearrange(e, "(K B) c h w -> B K c h w", K=K, B=B, h=h, w=w)
             w = F.softmax(f, dim=1)
             e = (w * e).sum(dim=1)
+            # print(f"i={i}, e.shape={e.shape}")
             encoder[i] = e
+        # pooled encoder = [crop_size/8, crop_size/16, crop_size/32, crop_size/64, crop_size/128]
+        # where kernel_size=4, stride=4
 
         feature = encoder[-1]
         skip = encoder[:-1][::-1]
@@ -745,9 +799,13 @@ class VCNet(nn.Module):
         last1 = F.dropout(last1, p=0.5, training=self.training)
         # (B, 1, H/2, W/2)
         logits1 = self.logit1(last1)
-        logits1 = F.interpolate(logits1, size=(H, W), mode="bilinear", align_corners=False)
+        # print("last1", last1.shape)
+        # print("logits1", logits1.shape)
+        # logits1 = F.interpolate(logits1, size=(H, W), mode="bilinear", align_corners=False)
 
-        x = F.dropout(last1, p=0.5, training=self.training)
+        # [decode_layer4, decode_layer3, decode_layer2, decode_layer1, decode_layer0]
+        x = F.dropout(decoder1[-1], p=0.5, training=self.training)
+        # print("x at decoder1[-1]", x.shape)
 
         # ------------------------
         encoder = []
@@ -767,7 +825,7 @@ class VCNet(nn.Module):
         last2 = F.dropout(last2, p=0.5, training=self.training)
         # (B, 1, H/2, W/2)
         logits2 = self.logit2(last2)
-        logits2 = F.interpolate(logits2, size=(H, W), mode="bilinear", align_corners=False)
+        # logits2 = F.interpolate(logits2, size=(H, W), mode="bilinear", align_corners=False)
         ink = torch.sigmoid(logits2)
         # ink = torch.sigmoid(F.interpolate(logits2, size=(H, W), mode="bilinear", align_corners=False))
 
@@ -824,7 +882,10 @@ def training_fn(cfg: CFG) -> None:
         logger.info(f"valid_images.shape: {len(valid_images)}")
         logger.info(f"valid_labels.shape: {len(valid_labels)}")
 
-        fragment_id = {1: 1, 2: 2, 3: 2, 4: 2, 5: 3}[fold]
+        # -- fragement2//3
+        # fragment_id = {1: 1, 2: 2, 3: 2, 4: 2, 5: 3}[fold]
+        # -- fragement2//2
+        fragment_id = {1: 1, 2: 2, 3: 2, 4: 3}[fold]
         valid_mask_gt = get_mask(cfg=cfg, fragment_id=fragment_id)
         net = VCNet(cfg=cfg).to(device=device, non_blocking=True)
         if resume_train:
@@ -853,7 +914,6 @@ def training_fn(cfg: CFG) -> None:
         best_score = 0
         use_awp = False
         for epoch in range(epoch):
-            seed_everything(seed=random_state)
             train_avg_loss = train_per_epoch(
                 cfg=cfg,
                 model=net,

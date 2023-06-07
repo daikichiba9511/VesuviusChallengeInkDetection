@@ -117,7 +117,7 @@ class CFG:
 
     max_grad_norm: float = 1000.0
 
-    start_awp_epoch: int = 10
+    start_awp_epoch: int = 12
     """epoch > start_awpでawpを使う"""
     start_epoch: int = 10
     adv_lr: float = 5e-7
@@ -178,7 +178,7 @@ class CFG:
             [
                 A.Resize(crop_size, crop_size),
                 A.RandomResizedCrop(crop_size, crop_size, scale=(0.5, 1.8), ratio=(0.5, 1.5)),
-            ],
+            ]
         ),
         A.RandomRotate90(always_apply=True),
         A.HorizontalFlip(p=0.5),
@@ -205,9 +205,9 @@ class CFG:
         # A.OpticalDistortion(p=0.5),
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
-            max_holes=2,
-            max_width=int(crop_size * 0.4),
-            max_height=int(crop_size * 0.6),
+            max_holes=1,
+            max_width=int(crop_size * 0.3),
+            max_height=int(crop_size * 0.3),
             fill_value=0,
             p=0.5,
         ),
@@ -216,8 +216,8 @@ class CFG:
         A.Cutout(
             p=0.5,
             num_holes=2,
-            max_w_size=int(crop_size * 0.4),
             max_h_size=int(crop_size * 0.6),
+            max_w_size=int(crop_size * 0.6),
             fill_value=0,
         ),
         A.Normalize(mean=[0] * fragment_depth, std=[1] * fragment_depth),
@@ -641,9 +641,6 @@ class VCNet(nn.Module):
         super().__init__()
         self.crop_depth = cfg.crop_depth
         self.pretrained = cfg.pretrained
-        self.volume_depth = cfg.fragment_depth
-        self.volumne_slice_starts = list(range(0, self.volume_depth - self.crop_depth + 1, 2))
-        logger.info(f"{volume_slice_starts}")
 
         self.output_type = ["inference", "loss"]
 
@@ -702,7 +699,7 @@ class VCNet(nn.Module):
         """
         volume = batch["volume"]
         B, C, H, W = volume.shape
-        vv = [volume[:, i : i + self.crop_depth] for i in self.volumne_slice_starts]
+        vv = [volume[:, i : i + self.crop_depth] for i in [0, 2, 4]]
         K = len(vv)
         x = torch.cat(vv, dim=0)
 
@@ -853,7 +850,6 @@ def training_fn(cfg: CFG) -> None:
         best_score = 0
         use_awp = False
         for epoch in range(epoch):
-            seed_everything(seed=random_state)
             train_avg_loss = train_per_epoch(
                 cfg=cfg,
                 model=net,

@@ -39,8 +39,20 @@
 
 # WANDB_MODE=online poetry run python scripts/exp050.py
 
-WANDB_MODE=online poetry run python scripts/exp050_2.py
+# WANDB_MODE=online poetry run python scripts/exp050_2.py
 # WANDB_MODE=online poetry run python scripts/exp051.py
 # WANDB_MODE=online poetry run python scripts/exp052.py
 # WANDB_MODE=online poetry run python scripts/exp050_3.py
 # WANDB_MODE=online poetry run python scripts/exp053.py
+
+# -- 2023/05/31
+# WANDB_MODE=online poetry run python scripts/exp055_2.py
+# WANDB_MODE=online poetry run python scripts/exp055_3.py
+# WANDB_MODE=online poetry run python scripts/exp055_4.py
+# WANDB_MODE=online poetry run python scripts/exp055_5.py
+
+# -- 2023/06/05
+WANDB_MODE=online poetry run python scripts/exp057.py
+WANDB_MODE=online poetry run python scripts/exp057_6.py
+WANDB_MODE=online poetry run python scripts/exp057_7.py
+WANDB_MODE=online poetry run python scripts/exp057_8.py

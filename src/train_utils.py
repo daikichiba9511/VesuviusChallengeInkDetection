@@ -218,11 +218,8 @@ def train_per_epoch(
     schedule_per_step: bool = False,
 ) -> float:
     # Map of Config
-    is_mixup = cfg.mixup and np.random.rand() <= cfg.mixup_prob
     mixup_alpha = cfg.mixup_alpha
-    is_cutmix = cfg.cutmix and np.random.rand() <= cfg.cutmix_prob
     cutmix_alpha = cfg.cutmix_alpha
-    is_label_noise = cfg.label_noise and np.random.rand() <= cfg.label_noise_prob
 
     start_epoch_to_freeze_model = cfg.start_freaze_model_epoch
     is_frozen = False
@@ -251,41 +248,44 @@ def train_per_epoch(
         for step, (images, target) in pbar:
             model.train()
 
-            if is_mixup:
+            if cfg.cutmix and np.random.rand() <= cfg.cutmix_prob:
                 images, target, _, _ = mixup(images, target, alpha=mixup_alpha)
 
-            if is_cutmix:
+            if cfg.mixup and np.random.rand() <= cfg.mixup_prob:
                 images, target, _, _ = cutmix(images, target, alpha=cutmix_alpha)
 
-            if is_label_noise:
+            if cfg.label_noise and np.random.rand() <= cfg.label_noise_prob:
                 images, target, _ = label_noise(images, target)
 
             images = images.contiguous().to(cfg.device, non_blocking=True)
             target = target.contiguous().to(cfg.device, non_blocking=True)
             batch_size = target.size(0)
-            # target_cls = make_cls_label(target)
+            target_cls = make_cls_label(target)
 
             if not is_frozen and epoch > start_epoch_to_freeze_model:
                 logger.info(f"freeze model with {freeze_keys}")
                 freeze_model(model, freeze_keys=freeze_keys)
                 is_frozen = True
 
-            target1 = resize_image_with_half_size(target)
+            # target1 = resize_image_with_half_size(target)
 
             batch = {"volume": images}
             with autocast(device_type="cuda", enabled=cfg.use_amp):
                 outputs = model(batch)
                 logit1 = outputs["logit1"]
                 logit2 = outputs["logit2"]
-                loss1 = criterion(logit1, target1)
+                loss1 = criterion(logit1, target)
                 loss2 = criterion(logit2, target)
                 loss_mask = loss1 + loss2
 
-                if "pred_label_logits" in outputs:
+                if any(["cls" in out_key for out_key in outputs.keys()]) and criterion_cls is not None:
                     weight_cls = cfg.weight_cls
-                    pred_label = outputs["pred_label_logits"]
-                    # loss_cls = weight_cls * criterion_cls(pred_label, target_cls)
-                    loss_cls = 0
+                    # pred_label = outputs["pred_label_logits"]
+                    cls_logits1 = outputs["cls_logits1"]
+                    cls_logits2 = outputs["cls_logits2"]
+                    loss_cls1 = weight_cls * criterion_cls(cls_logits1, target_cls)
+                    loss_cls2 = weight_cls * criterion_cls(cls_logits2, target_cls)
+                    loss_cls = loss_cls1 + loss_cls2
                 else:
                     loss_cls = 0
 
@@ -323,6 +323,8 @@ def train_per_epoch(
                         "fold": f"{fold}",
                         "epoch": f"{epoch}",
                         "loss_avg": f"{running_loss.avg:.4f}",
+                        "cls_loss": f"{loss_cls.item():.4f}",
+                        "loss": f"{loss.item():.4f}",
                     }
                 )
                 learning_rate = optimizer.param_groups[0]["lr"]
@@ -330,6 +332,7 @@ def train_per_epoch(
                     {
                         f"fold{fold}_train_loss": loss.item(),
                         "learning_rate": learning_rate,
+                        f"fold{fold}_cls_train_loss": loss_cls.item(),
                     }
                 )
 
@@ -354,8 +357,8 @@ def tta_rotate(net: nn.Module, volume: torch.Tensor) -> torch.Tensor:
     ink = [
         ink[0],
         torch.rot90(ink[1], k=-1, dims=(-2, -1)),
-        torch.rot90(ink[1], k=-2, dims=(-2, -1)),
-        torch.rot90(ink[1], k=-3, dims=(-2, -1)),
+        torch.rot90(ink[2], k=-2, dims=(-2, -1)),
+        torch.rot90(ink[3], k=-3, dims=(-2, -1)),
     ]
     ink = torch.stack(ink, dim=0).mean(dim=0)
     return ink
@@ -369,7 +372,7 @@ def valid_per_epoch(
     fold: int,
     epoch: int,
     valid_xyxys: np.ndarray,
-    valid_masks: torch.Tensor,
+    valid_masks: np.ndarray,
 ) -> dict[str, float | np.ndarray]:
     crop_size = cfg.crop_size
 
@@ -749,12 +752,17 @@ def get_optimizer(cfg, model: nn.Module) -> optim.Optimizer:
     else:
         params = model.parameters()
     if cfg.optimizer == "AdamW":
+        weight_decay = getattr(cfg, "weight_decay")
         if cfg.use_diff_lr:
-            # optimizer = optim.AdamW(params=params, weight_decay=cfg.weight_decay)
-            optimizer = optim.AdamW(params=params)
+            if weight_decay is not None:
+                optimizer = optim.AdamW(params=params, weight_decay=weight_decay)
+            else:
+                optimizer = optim.AdamW(params=params)
         else:
-            # optimizer = optim.AdamW(params=params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-            optimizer = optim.AdamW(params=params, lr=cfg.lr)
+            if weight_decay is not None:
+                optimizer = optim.AdamW(params=params, lr=cfg.lr, weight_decay=weight_decay)
+            else:
+                optimizer = optim.AdamW(params=params, lr=cfg.lr)
         return optimizer
     if cfg.optimizer == "RAdam":
         if cfg.use_diff_lr:

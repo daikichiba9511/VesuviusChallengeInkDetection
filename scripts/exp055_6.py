@@ -78,7 +78,7 @@ else:
 
 @dataclass
 class CFG:
-    exp_name: str = "exp055_stackedUnet"
+    exp_name: str = "exp055_6_8_stackedUnet"
     mode = ["train", "test"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random_state: int = 42
@@ -117,10 +117,10 @@ class CFG:
 
     max_grad_norm: float = 1000.0
 
-    start_awp_epoch: int = 10
+    start_awp_epoch: int = 8
     """epoch > start_awpでawpを使う"""
     start_epoch: int = 10
-    adv_lr: float = 5e-7
+    adv_lr: float = 5e-6
     adv_eps: int = 3
     adv_step: int = 1
 
@@ -179,12 +179,13 @@ class CFG:
                 A.Resize(crop_size, crop_size),
                 A.RandomResizedCrop(crop_size, crop_size, scale=(0.5, 1.8), ratio=(0.5, 1.5)),
             ],
+            p=1.0,
         ),
         A.RandomRotate90(always_apply=True),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.5),
-        A.RandomContrast(limit=0.5, p=0.5),
+        # A.RandomContrast(limit=0.5, p=0.5),
         # A.Downscale(scale_min=0.5, scale_max=0.95, p=0.5),
         # A.CLAHE(p=0.75),
         A.ShiftScaleRotate(
@@ -206,20 +207,20 @@ class CFG:
         A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
         A.CoarseDropout(
             max_holes=2,
-            max_width=int(crop_size * 0.4),
-            max_height=int(crop_size * 0.6),
+            max_width=int(crop_size * 0.6),
+            max_height=int(crop_size * 0.4),
             fill_value=0,
             p=0.5,
         ),
         # A.ChannelShuffle(p=0.5),
         # A.ChannelDropout(p=0.5),
-        A.Cutout(
-            p=0.5,
-            num_holes=2,
-            max_w_size=int(crop_size * 0.4),
-            max_h_size=int(crop_size * 0.6),
-            fill_value=0,
-        ),
+        # A.Cutout(
+        #     p=0.5,
+        #     num_holes=2,
+        #     max_h_size=int(crop_size * 0.6),
+        #     max_w_size=int(crop_size * 0.4),
+        #     fill_value=0,
+        # ),
         A.Normalize(mean=[0] * fragment_depth, std=[1] * fragment_depth),
         ToTensorV2(transpose_mask=True),
     ]
@@ -315,11 +316,11 @@ class Data:
     """(height, width, depth)"""
     fragment_id: int
     """0 ~ 65"""
-    label: Optional[np.ndarray] = None
+    label: np.ndarray
     """inklabels"""
-    mask: Optional[np.ndarray] = None
+    mask: np.ndarray
     """mask"""
-    ir: Optional[np.ndarray] = None
+    ir: np.ndarray
     "ir"
 
 
@@ -642,8 +643,6 @@ class VCNet(nn.Module):
         self.crop_depth = cfg.crop_depth
         self.pretrained = cfg.pretrained
         self.volume_depth = cfg.fragment_depth
-        self.volumne_slice_starts = list(range(0, self.volume_depth - self.crop_depth + 1, 2))
-        logger.info(f"{volume_slice_starts}")
 
         self.output_type = ["inference", "loss"]
 
@@ -702,7 +701,7 @@ class VCNet(nn.Module):
         """
         volume = batch["volume"]
         B, C, H, W = volume.shape
-        vv = [volume[:, i : i + self.crop_depth] for i in self.volumne_slice_starts]
+        vv = [volume[:, i : i + self.crop_depth] for i in range(0, self.volume_depth - self.crop_depth + 1, 2)]
         K = len(vv)
         x = torch.cat(vv, dim=0)
 
@@ -853,7 +852,6 @@ def training_fn(cfg: CFG) -> None:
         best_score = 0
         use_awp = False
         for epoch in range(epoch):
-            seed_everything(seed=random_state)
             train_avg_loss = train_per_epoch(
                 cfg=cfg,
                 model=net,

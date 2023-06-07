@@ -211,7 +211,6 @@ class CFG:
             fill_value=0,
             p=0.5,
         ),
-        A.RGBShuffle(p=0.5),
         A.Cutout(
             p=0.5,
             num_holes=2,
