@@ -99,7 +99,7 @@ class AWP:
         for i in range(self.adv_step):
             self._attack_step()
             with autocast(device_type="cuda", enabled=self.scaler is not None):
-                logits = self.model({"volume": x})["ink"]
+                logits = self.model(x)["ink"]
                 adv_loss = self.criterion(logits, y)
                 adv_loss = adv_loss.mean()
             self.optimizer.zero_grad()
@@ -200,6 +200,23 @@ def resize_image_with_half_size(image: torch.Tensor) -> torch.Tensor:
     return image
 
 
+def random_depth_crop(
+    volume: torch.Tensor, depth_range: tuple[int, int], crop_depth: int
+) -> tuple[torch.Tensor, int, int]:
+    """random depth crop
+
+    Args:
+        volume (torch.Tensor): volume, (C, D, H, W)
+        depth_range (tuple[int, int]): depth range
+        crop_depth (int): crop depth
+    """
+    z0 = int(np.random.randint(low=0, high=volume.shape[1] - crop_depth, size=1))
+    z1 = z0 + crop_depth
+    # logger.debug(f"volume.shape: {volume.shape} z0: {z0}, z1: {z1}")
+    # assert z1 <= volume.shape[1]
+    return volume[:, z0:z1, :, :], z0, z1
+
+
 LossFn: TypeAlias = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 
@@ -225,6 +242,10 @@ def train_per_epoch(
     is_frozen = False
     freeze_keys = cfg.freeze_keys
     max_grad_norm = cfg.max_grad_norm
+    use_amp = cfg.use_amp
+
+    depth_range = cfg.fragment_z
+    fragment_depth = cfg.fragment_depth
 
     if use_awp:
         awp = AWP(
@@ -262,6 +283,9 @@ def train_per_epoch(
             batch_size = target.size(0)
             target_cls = make_cls_label(target)
 
+            images, _, _ = random_depth_crop(images, depth_range, fragment_depth)
+            # logger.debug(images.shape)
+
             if not is_frozen and epoch > start_epoch_to_freeze_model:
                 logger.info(f"freeze model with {freeze_keys}")
                 freeze_model(model, freeze_keys=freeze_keys)
@@ -269,9 +293,8 @@ def train_per_epoch(
 
             # target1 = resize_image_with_half_size(target)
 
-            batch = {"volume": images}
-            with autocast(device_type="cuda", enabled=cfg.use_amp):
-                outputs = model(batch)
+            with autocast(device_type="cuda", enabled=use_amp):
+                outputs = model(images)
                 logit1 = outputs["logit1"]
                 logit2 = outputs["logit2"]
                 loss1 = criterion(logit1, target)
@@ -309,7 +332,7 @@ def train_per_epoch(
                 # https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
                 # scaler.unscale_(optimizer)
                 # clip gradient of parameters
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
                 scaler.step(optimizer)
                 scaler.update()
@@ -348,10 +371,11 @@ def tta_rotate(net: nn.Module, volume: torch.Tensor) -> torch.Tensor:
         torch.rot90(volume, k=3, dims=(-2, -1)),
     ]
     K = len(rotated_volumes)
-    batch = {
-        "volume": torch.cat(rotated_volumes, dim=0),
-    }
-    output = net(batch)
+    # batch = {
+    #     "volume": torch.cat(rotated_volumes, dim=0),
+    # }
+    volume = torch.cat(rotated_volumes, dim=0)
+    output = net(volume)
     ink = output["ink"]
     ink = ink.reshape(K, B, 1, H, W)
     ink = [
@@ -373,8 +397,11 @@ def valid_per_epoch(
     epoch: int,
     valid_xyxys: np.ndarray,
     valid_masks: np.ndarray,
+    log_prefix: str = "",
 ) -> dict[str, float | np.ndarray]:
     crop_size = cfg.crop_size
+    depth_range = cfg.fragment_z
+    fragment_depth = cfg.fragment_depth
 
     mask_preds = np.zeros(valid_masks.shape)
     mask_count = np.zeros(valid_masks.shape)
@@ -395,14 +422,16 @@ def valid_per_epoch(
         target = target.to(cfg.device, non_blocking=True)
         batch_size = target.size(0)
 
-        batch = {"volume": image}
+        image, _, _ = random_depth_crop(image, depth_range, fragment_depth)
+
+        # batch = {"volume": image}
         with torch.inference_mode():
             with torch.cuda.amp.autocast(enabled=cfg.use_amp):
                 # segm_logits: (N, 1, H, W)
                 if cfg.use_tta:
                     y_preds = tta_rotate(model, image)
                 else:
-                    y_preds = model(batch)["ink"]
+                    y_preds = model(image)["ink"]
             loss_mask = criterion(y_preds, target)
 
             # cls: (N, 1)
@@ -418,8 +447,8 @@ def valid_per_epoch(
         valid_bces.update(value=bce.item(), n=batch_size)
         wandb.log(
             {
-                f"fold{fold}_valid_loss": loss.item(),
-                f"fold{fold}_valid_bce": bce.item(),
+                f"{log_prefix}fold{fold}_valid_loss": loss.item(),
+                f"{log_prefix}fold{fold}_valid_bce": bce.item(),
                 # f"fold{fold}_valid_cls_loss": loss_cls.item(),
                 # f"fold{fold}_valid_acc": accs,
             }
@@ -780,7 +809,7 @@ def get_alb_transforms(phase: str, cfg) -> A.Compose | tuple[A.Compose, A.Compos
         cfg: 設定
     """
     image_size = (cfg.crop_size, cfg.crop_size)
-    in_chans = cfg.fragment_depth
+    in_chans = cfg.fragment_z[1] - cfg.fragment_z[0]
     if phase == "train":
         return A.Compose(cfg.train_compose), A.Compose(cfg.soft_train_compose)
     elif phase == "valid":
