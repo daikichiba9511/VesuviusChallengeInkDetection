@@ -6,6 +6,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def mixup(
+    images: torch.Tensor, labels: torch.Tensor, alpha: float = 0.2
+) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
+    """
+    Args:
+        images: (N, C, H, W)
+        labels: (N, H, W)
+        alpha: beta分布のパラメータ
+
+    Returns:
+        mixed_image: (N, C, H, W)
+        mixed_labels: (N, H, W), mask
+        lambd: 重み
+        rand_idx: 乱数のインデックス
+    """
+    if not (0.0 <= alpha <= 1.0):
+        raise ValueError(f"Invalid alpha: {alpha}")
+
+    # lam = np.random.beta(alpha, alpha)
+    lam = torch.distributions.beta.Beta(alpha, alpha).sample()
+    batch_size = images.shape[0]
+    rand_idx = torch.randperm(batch_size)
+
+    # (N, C, H, W)
+    mixed_image = lam * images + (1 - lam) * images[rand_idx, ...]
+    # (N, 1, H, W)
+    mixed_labels = lam * labels + (1 - lam) * labels[rand_idx, ...]
+    return mixed_image, mixed_labels, lam, rand_idx
+
+
 class GeM(nn.Module):
     def __init__(self, p: int = 3, eps: float = 1e-6):
         super().__init__()
@@ -62,6 +92,7 @@ class Model(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
+        # 2dcnn
         self.backbone = timm.create_model("tf_efficientnet_b0_ns", pretrained=True, num_classes=1, in_chans=3)
         self.mlp = nn.Sequential(
             nn.Linear(68, 256),
@@ -70,6 +101,7 @@ class Model(nn.Module):
             nn.Dropout(0.2),
         )
 
+        # pointwise conv2d
         n_hidden = 1024
         self.conv_proj = nn.Sequential(
             nn.Conv2d(in_channels=1280, out_channels=512, kernel_size=1, stride=1),
@@ -84,6 +116,7 @@ class Model(nn.Module):
             nn.Dropout(0.2),
         )
 
+        # 3dcnn
         self.triple_layer = nn.Sequential(
             Residual3DBlock(),
         )
@@ -107,6 +140,7 @@ class Model(nn.Module):
         # batch側に寄せてencodeする
         images = images.view(b * t // 3, 3, h, w)
         # print("image_view.shape", images.shape)
+        # encoded_feature: (80, 1280, 16, 16)
         encoded_feature = self.backbone.forward_features(images)
         # print("encoded_feature.shape: ", encoded_feature.shape)
         feature_maps = self.conv_proj(encoded_feature)
@@ -135,7 +169,7 @@ class Model(nn.Module):
         cat_feature = torch.cat([nn_feature, feature], dim=1)
         # print(f"cat_feature.shape: {cat_feature.shape}")
         if target is not None:
-            cat_feature, y_a, y_b, lam = self.mixup(cat_feature, target, mixup_alpha)
+            cat_feature, y_a, y_b, lam = mixup(cat_feature, target, mixup_alpha)
             y = self.fc(cat_feature)
             return y, y_a, y_b, lam
         else:
